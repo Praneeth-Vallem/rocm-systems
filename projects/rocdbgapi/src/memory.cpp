@@ -807,7 +807,6 @@ memory_cache_t<AddressType>::xfer_global_memory (AddressType address,
 }
 
 template class memory_cache_t<agent_address_t>;
-template class memory_cache_t<host_address_t>;
 
 } /* namespace amd::dbgapi */
 
