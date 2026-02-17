@@ -652,6 +652,7 @@ global:
     hipMemGetMemPool;
     hipMipmappedArrayGetMemoryRequirements;
     hipKernelGetAttribute;
+    hipDeviceGetCuid;
 local:
     *;
 } hip_7.1;
