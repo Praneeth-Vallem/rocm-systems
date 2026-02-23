@@ -47,7 +47,7 @@
 #include "core/agent_manager.hpp"
 
 #if ROCPROFSYS_USE_ROCM > 0
-#    include <amd_smi/amdsmi.h>
+#    include "core/amd_smi.hpp"
 #    include <rocprofiler-sdk/agent.h>
 #    include <rocprofiler-sdk/cxx/serialization.hpp>
 #    include <rocprofiler-sdk/fwd.h>
@@ -254,12 +254,16 @@ std::vector<bool>                    processors::jpeg_busy_supported    = {};
 std::vector<bool>                    processors::xgmi_supported         = {};
 std::vector<bool>                    processors::pcie_supported         = {};
 
+std::vector<amdsmi_processor_handle> processors::ainic_list        = {};
+uint32_t                             processors::total_ainic_count = 0;
+
 void
 get_processor_handles()
 {
     uint32_t socket_count;
     uint32_t processor_count;
     processors::processors_list.clear();
+    processors::ainic_list.clear();
 
     // Passing nullptr will return us the number of sockets available for read in this
     // system
@@ -291,6 +295,13 @@ get_processor_handles()
         {
             processor_type_t processor_type = {};
             ret = amdsmi_get_processor_type(processor, &processor_type);
+#    ifdef AINIC_SUPPORTED
+            if(processor_type == AMDSMI_PROCESSOR_TYPE_AMD_NIC)
+            {
+                processors::ainic_list.push_back(processor);
+                continue;
+            }
+#    endif  // AINIC_SUPPORTED
             if(processor_type != AMDSMI_PROCESSOR_TYPE_AMD_GPU)
             {
                 throw std::runtime_error("Not AMD_GPU device type!");
@@ -354,6 +365,7 @@ get_processor_handles()
         }
     }
     processors::total_processor_count = processors::processors_list.size();
+    processors::total_ainic_count     = processors::ainic_list.size();
 }
 
 bool
