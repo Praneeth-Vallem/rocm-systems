@@ -1135,7 +1135,7 @@ rocprofsys_finalize_hidden(void)
     // Reset initialization guards to allow reinitialization (e.g., re-attach)
     init_library_done = false;
     init_tooling_done = 0;
-    set_state(State::PreInit);
+    reset_state();
 }
 
 //======================================================================================//
