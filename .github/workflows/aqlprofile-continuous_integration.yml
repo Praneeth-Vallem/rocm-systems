@@ -27,7 +27,6 @@ concurrency:
 
 env:
   ROCM_PATH: "/opt/rocm"
-  ROCM_VERSION: "7.2.0"
   PYTHON_VENV_PATH: "aqlprofile"
   PYTHON_VENV_ACTIVATE: "aqlprofile/bin/activate"
   navi3_EXCLUDE_TESTS_REGEX: ""
@@ -59,7 +58,7 @@ jobs:
 
     runs-on: ${{ matrix.system.runner }}
     container:
-      image: docker.io/rocm/rocprofiler-private:${{ matrix.system.os }}-${{ matrix.system.gpu-target }}-latest
+      image: docker.io/rocm/rocprofiler-private:${{ matrix.system.os }}-${{ matrix.system.gpu-target }}-latest-temp
       credentials:
         username: ${{ secrets.ROCPROFILER_AZURE_CI_USER }}
         password: ${{ secrets.ROCPROFILER_AZURE_CI_PASS }}
@@ -139,7 +138,7 @@ jobs:
 
     runs-on: ${{ matrix.system.runner }}
     container:
-      image: docker.io/rocm/rocprofiler-private:${{ matrix.system.os }}-${{ matrix.system.gpu-target }}-latest
+      image: docker.io/rocm/rocprofiler-private:${{ matrix.system.os }}-${{ matrix.system.gpu-target }}-latest-temp
       credentials:
         username: ${{ secrets.ROCPROFILER_AZURE_CI_USER }}
         password: ${{ secrets.ROCPROFILER_AZURE_CI_PASS }}
