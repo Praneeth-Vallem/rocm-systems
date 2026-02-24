@@ -2629,9 +2629,12 @@ bool
 sdk_tool_configure(uint32_t version, const char* runtime_version,
                    rocprofiler_client_id_t* id)
 {
-    if(!rocprofsys::config::settings_are_configured() &&
+    // Ensure tooling is initialized and state is Active
+    if(!rocprofsys::config::settings_are_configured() ||
        rocprofsys::get_state() < rocprofsys::State::Active)
+    {
         rocprofsys_init_tooling_hidden();
+    }
 
     if(!rocprofsys::config::get_use_rocm()) return false;
 
@@ -2695,18 +2698,13 @@ extern "C"
                          rocprofiler_context_id_t*                    context_ids,
                          uint64_t context_ids_length, [[maybe_unused]] void* tool_data)
     {
-        // On re-attach after detach, state is PreInit and we need to reinitialize
-        if(rocprofsys::get_state() == rocprofsys::State::PreInit)
+        // On re-attach, rocprofiler_configure_attach is NOT called again by the SDK.
+        // Only tool_attach_init is called. So we must ensure initialization happens here.
+        if(rocprofsys::get_state() != rocprofsys::State::Active)
         {
+            // Reset guards and reinitialize for the new session
+            rocprofsys_reset_for_reattach_hidden();
             rocprofsys_init_tooling_hidden();
-
-            // Reinitialize AMD SMI if configured
-            if(rocprofsys::config::get_use_process_sampling() &&
-               rocprofsys::config::get_use_amd_smi())
-            {
-                rocprofsys::amd_smi::setup();
-                rocprofsys::amd_smi::set_state(rocprofsys::State::Active);
-            }
         }
 
         // Start all contexts provided by the SDK
@@ -2722,6 +2720,8 @@ extern "C"
     {
         ::rocprofsys::rocprofiler_sdk::tool_fini(tool_data);
         rocprofsys_finalize_hidden();
+        // Reset all guards and state to PreInit for potential re-attach
+        rocprofsys_reset_for_reattach_hidden();
         ::rocprofsys::rocprofiler_sdk::reset_state();
     }
 

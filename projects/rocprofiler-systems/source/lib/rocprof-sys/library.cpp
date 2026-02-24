@@ -125,6 +125,10 @@ auto _timemory_settings = tim::settings::shared_instance();
 bool  init_library_done = false;
 pid_t init_tooling_done = 0;
 
+// Finalization guard - prevents multiple finalization calls within the same session.
+// This is reset by reset_finalization_guard() when re-attach is requested.
+bool finalization_done = false;
+
 void
 set_metadata_process_start_timestamp(int64_t _ts)
 {
@@ -799,6 +803,13 @@ rocprofsys_reset_preload_hidden(void)
 extern "C" void
 rocprofsys_finalize_hidden(void)
 {
+    // Prevent multiple finalization calls (e.g., from atexit handlers after reset_state)
+    if(finalization_done)
+    {
+        LOG_DEBUG("Finalization already completed. Skipping.");
+        return;
+    }
+
     // disable thread id recycling during finalization
     threading::recycle_ids() = false;
     // disable initialization callback
@@ -813,6 +824,9 @@ rocprofsys_finalize_hidden(void)
         LOG_DEBUG("State = {}. Finalization skipped", std::to_string(get_state()));
         return;
     }
+
+    // Mark finalization as in progress to prevent re-entry
+    finalization_done = true;
 
     set_metadata_process_end_timestamp(comp::wall_clock::record());
 
@@ -1132,10 +1146,23 @@ rocprofsys_finalize_hidden(void)
 
     common::destroy_static_objects();
 
-    // Reset initialization guards to allow reinitialization (e.g., re-attach)
+    // Note: init_library_done, init_tooling_done, and state are NOT reset here.
+    // They are only reset by rocprofsys_reset_for_reattach_hidden() when
+    // explicitly preparing for re-attach. Resetting them during normal exit
+    // can cause crashes if cleanup code triggers reinitialization.
+}
+
+//======================================================================================//
+
+extern "C" void
+rocprofsys_reset_for_reattach_hidden(void)
+{
+    // Reset all guards to allow reinitialization on re-attach
+    finalization_done = false;
     init_library_done = false;
     init_tooling_done = 0;
     reset_state();
+    LOG_DEBUG("Reset all guards for re-attach");
 }
 
 //======================================================================================//
