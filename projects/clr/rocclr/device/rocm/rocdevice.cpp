@@ -1216,6 +1216,13 @@ bool Device::populateOCLDeviceConstants() {
       }
     }
 
+    if (info_.hostUnifiedMemory_) {
+      const uint64_t host_total = amd::Os::hostTotalPhysicalMemory();
+      if (info_.globalMemSize_ > host_total) {
+        info_.globalMemSize_ = host_total;
+      }
+    }
+
     gpuvm_segment_max_alloc_ =
         uint64_t(info_.globalMemSize_ * std::min(GPU_SINGLE_ALLOC_PERCENT, 100u) / 100u);
     assert(gpuvm_segment_max_alloc_ > 0);
