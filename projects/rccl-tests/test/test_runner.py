@@ -34,7 +34,7 @@ def run_rccl_mpi(executable_name, nprocs, args, hostfile=None, timeout=300):
     executable = os.path.join(BUILD_DIR, executable_name)
     cmd = ["mpirun", "-np", str(nprocs)]
     if hostfile:
-        cmd += ["-host", hostfile]
+        cmd += ["-hostfile", hostfile]
     cmd += [executable, "-p", "1"] + args
 
     try:
