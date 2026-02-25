@@ -99,8 +99,8 @@ jobs:
       working-directory: /tmp
       run: |
         echo $ROCM_VERSION
-        tar -xf ${{ env.ROCM_PATH }}-${{ matrix.system.gpu-target }}.tar.gz -C ${{ env.ROCM_PATH }}-${{ env.ROCM_VERSION }}
-        ln -s ${{ env.ROCM_PATH }}-${{ env.ROCM_VERSION }} ${{ env.ROCM_PATH }}
+        tar -xf ${{ env.ROCM_PATH }}-${{ matrix.system.gpu-target }}.tar.gz -C ${{ env.ROCM_PATH }}-$ROCM_VERSION
+        ln -s ${{ env.ROCM_PATH }}-$ROCM_VERSION ${{ env.ROCM_PATH }}
         echo "ROCm installed to: ${{ env.ROCM_PATH }}"
 
     - name: Clone ROCProfiler SDK & AQLProfile & ROCProfiler Register & ROCR-Runtime
@@ -236,7 +236,7 @@ jobs:
         export PATH=${{ env.ROCM_PATH }}/bin:${{ env.ROCM_PATH }}/llvm/bin:/usr/local/bin:~/.local/bin:$PATH
         echo -e "Building & Installing ROCDecode..."
         cmake -B build-rocdecode \
-          -DCMAKE_INSTALL_PREFIX=${{ env.ROCM_PATH }}-${{ env.ROCM_VERSION }} \
+          -DCMAKE_INSTALL_PREFIX=${{ env.ROCM_PATH }}-$ROCM_VERSION \
           -DCMAKE_PREFIX_PATH=${{ env.ROCM_PATH }} \
           -DCMAKE_CXX_COMPILER=${{ env.ROCM_PATH }}/bin/amdclang++ \
           -DCMAKE_C_COMPILER_LAUNCHER=ccache \
@@ -247,7 +247,7 @@ jobs:
         echo -e "ROCDecode Installed Successfully!"
         echo -e "Building & Installing ROCJPEG..."
         cmake -B build-rocjpeg \
-          -DCMAKE_INSTALL_PREFIX=${{ env.ROCM_PATH }}-${{ env.ROCM_VERSION }} \
+          -DCMAKE_INSTALL_PREFIX=${{ env.ROCM_PATH }}-$ROCM_VERSION \
           -DCMAKE_PREFIX_PATH=${{ env.ROCM_PATH }} \
           -DCMAKE_CXX_COMPILER=${{ env.ROCM_PATH }}/bin/amdclang++ \
           -DCMAKE_C_COMPILER_LAUNCHER=ccache \
@@ -266,8 +266,8 @@ jobs:
         echo "Install ROCProfiler-Register"
         cmake -B build-rocprofiler-register \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-          -DCMAKE_PREFIX_PATH=${{ env.ROCM_PATH }}-${{ env.ROCM_VERSION }} \
-          -DCMAKE_INSTALL_PREFIX=${{ env.ROCM_PATH }}-${{ env.ROCM_VERSION }} \
+          -DCMAKE_PREFIX_PATH=${{ env.ROCM_PATH }}-$ROCM_VERSION \
+          -DCMAKE_INSTALL_PREFIX=${{ env.ROCM_PATH }}-$ROCM_VERSION \
           -DCMAKE_C_COMPILER_LAUNCHER=ccache \
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
           .
@@ -285,8 +285,8 @@ jobs:
         echo "Install ROCR-Runtime..."
         cmake -B build \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-          -DCMAKE_PREFIX_PATH='${{ env.ROCM_PATH }}-${{ env.ROCM_VERSION }};${{ env.ROCM_PATH }}-${{ env.ROCM_VERSION }}/llvm' \
-          -DCMAKE_INSTALL_PREFIX=${{ env.ROCM_PATH }}-${{ env.ROCM_VERSION }} \
+          -DCMAKE_PREFIX_PATH='${{ env.ROCM_PATH }}-$ROCM_VERSION;${{ env.ROCM_PATH }}-$ROCM_VERSION/llvm' \
+          -DCMAKE_INSTALL_PREFIX=${{ env.ROCM_PATH }}-$ROCM_VERSION \
           .
         cmake --build build --target all --parallel 16
         cmake --build build --target install
@@ -307,8 +307,8 @@ jobs:
           -DHIP_COMMON_DIR=$HIP_DIR \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
           -DHIP_PLATFORM=amd \
-          -DCMAKE_PREFIX_PATH='${{ env.ROCM_PATH }}-${{ env.ROCM_VERSION }};${{ env.ROCM_PATH }}-${{ env.ROCM_VERSION }}/llvm' \
-          -DCMAKE_INSTALL_PREFIX=${{ env.ROCM_PATH }}-${{ env.ROCM_VERSION }} \
+          -DCMAKE_PREFIX_PATH='${{ env.ROCM_PATH }}-$ROCM_VERSION;${{ env.ROCM_PATH }}-$ROCM_VERSION/llvm' \
+          -DCMAKE_INSTALL_PREFIX=${{ env.ROCM_PATH }}-$ROCM_VERSION \
           -DHIP_LLVM_ROOT=${{ env.ROCM_PATH }}/lib/llvm \
           -DHIP_CATCH_TEST=0 \
           -DCLR_BUILD_HIP=ON \
@@ -328,8 +328,8 @@ jobs:
         echo "Install Aqlprofile..."
         cmake -B build-aqlprofile \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-          -DCMAKE_PREFIX_PATH=${{ env.ROCM_PATH }}-${{ env.ROCM_VERSION }} \
-          -DCMAKE_INSTALL_PREFIX=${{ env.ROCM_PATH }}-${{ env.ROCM_VERSION }} \
+          -DCMAKE_PREFIX_PATH=${{ env.ROCM_PATH }}-$ROCM_VERSION \
+          -DCMAKE_INSTALL_PREFIX=${{ env.ROCM_PATH }}-$ROCM_VERSION \
           -DCMAKE_C_COMPILER_LAUNCHER=ccache \
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
           .
