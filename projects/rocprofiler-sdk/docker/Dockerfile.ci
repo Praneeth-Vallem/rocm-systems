@@ -3,7 +3,6 @@ ARG BASE_TAG=ubuntu-22.04
 FROM rocm/rocprofiler-private:${BASE_TAG}
 ARG GPU_TYPE=gfx94X
 ARG GPU_TARBALL
-ARG ROCM_VERSION
 
 SHELL ["/bin/bash","-lc"]
 COPY projects/rocprofiler-sdk/requirements.txt /root/requirements.txt
@@ -114,3 +113,5 @@ RUN set -euo pipefail; \
 
 # Expose ROCM_VERSION directly from the installed ROCm metadata
 RUN echo "export ROCM_VERSION=$(cat /opt/rocm/.info/version)" > /etc/profile.d/rocm-version.sh
+
+ENV BASH_ENV=/etc/profile.d/rocm-version.sh
