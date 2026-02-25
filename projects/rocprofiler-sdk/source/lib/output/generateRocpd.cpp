@@ -36,7 +36,6 @@
 #include "lib/common/logging.hpp"
 #include "lib/common/md5sum.hpp"
 #include "lib/common/mpl.hpp"
-#include "lib/common/scope_destructor.hpp"
 #include "lib/common/simple_timer.hpp"
 #include "lib/common/utility.hpp"
 #include "lib/output/sql/common.hpp"
@@ -104,6 +103,10 @@ namespace
 namespace fs          = ::rocprofiler::common::filesystem;
 using function_args_t = std::vector<argument_info>;
 
+struct rocpd_db;
+void
+finish_pending_insert_batch(rocpd_db& db);
+
 struct sql_insert_value
 {
     std::string_view                                                                     name  = {};
@@ -112,13 +115,11 @@ struct sql_insert_value
 
 struct pending_insert_batch
 {
-    sqlite3*                                        conn      = nullptr;
-    std::unordered_map<std::string, sqlite3_stmt*>* cache     = nullptr;
-    std::string                                     table     = {};
-    std::vector<std::string>                        fields    = {};
-    std::vector<std::vector<sql_insert_value>>      rows      = {};
-    size_t                                          max_rows  = 1;
-    bool                                            is_active = false;
+    std::string                                table     = {};
+    std::vector<std::string>                   fields    = {};
+    std::vector<std::vector<sql_insert_value>> rows      = {};
+    size_t                                     max_rows  = 1;
+    bool                                       is_active = false;
 };
 
 struct rocpd_db
@@ -129,10 +130,10 @@ struct rocpd_db
 
     rocpd_db() = default;
     ~rocpd_db();
-    rocpd_db(const rocpd_db&)            = delete;
+    rocpd_db(const rocpd_db&) = delete;
     rocpd_db& operator=(const rocpd_db&) = delete;
     rocpd_db(rocpd_db&&)                 = delete;
-    rocpd_db& operator=(rocpd_db&&)      = delete;
+    rocpd_db& operator=(rocpd_db&&) = delete;
 
     sqlite3*             conn             = nullptr;
     std::string          uuid             = {};
@@ -208,12 +209,6 @@ replace_uuid(const rocpd_db& db, std::string_view inp)
     return replace_all(std::string{inp}, std::string_view{"{{uuid}}"}, replacement);
 }
 
-auto
-replace_placeholders(const rocpd_db& db, std::string_view inp)
-{
-    return replace_uuid(db, inp);
-}
-
 template <typename... Args>
 void
 add_string_entry(metadata& _metadata, Args&&... _args)
@@ -232,11 +227,11 @@ read_file(rocpd_sql_engine_t                        engine,
           const char*                               schema_content,
           void*                                     user_data)
 {
-    common::consume_args(engine, kind, options, variables, schema_path, schema_content);
+    common::consume_args(engine, kind, options, variables, schema_path);
 
     auto* _db     = static_cast<rocpd_db*>(user_data);
     auto& _schema = _db->schemas[kind];
-    _schema       = replace_placeholders(*_db, schema_content);
+    _schema       = replace_uuid(*_db, schema_content);
 }
 
 std::string
@@ -289,8 +284,10 @@ struct is_optional<std::optional<Tp>> : std::true_type
     using value_type = Tp;
 };
 
+// ROCPROFILER_NOINLINE prevents GCC 12.x from generating false "maybe-uninitialized"
+// warnings for sql_insert_value's std::variant member when this is inlined at call sites.
 template <typename Tp, typename TraitT = int>
-sql_insert_value
+ROCPROFILER_NOINLINE sql_insert_value
 insert_value(std::string_view _name, const Tp& _value, TraitT = {})
 {
     using value_type = common::mpl::unqualified_type_t<Tp>;
@@ -345,7 +342,8 @@ insert_value(std::string_view _name, const Tp& _value, TraitT = {})
 }
 
 //
-// this overload works around around a (false) maybe-initialized warning in GCC 12.x
+// This overload works around a (false) maybe-initialized warning in GCC 12.x
+// for std::optional<Tp> values (see also: ROCPROFILER_NOINLINE on the primary overload).
 //
 template <typename Tp, typename TraitT = int>
 ROCPROFILER_NOINLINE sql_insert_value
@@ -358,6 +356,8 @@ insert_value(std::string_view _name, const std::optional<Tp>& _value, TraitT = {
 
 rocpd_db::~rocpd_db()
 {
+    finish_pending_insert_batch(*this);
+
     for(auto& [key, stmt] : statements)
     {
         if(stmt) SQLITE3_CHECK(sqlite3_finalize(stmt));
@@ -374,14 +374,12 @@ rocpd_db::~rocpd_db()
 size_t
 get_max_batch_rows(sqlite3* conn, size_t col_count)
 {
-    int var_limit = sqlite3_limit(conn, SQLITE_LIMIT_VARIABLE_NUMBER, -1);
-    if(var_limit <= 0) var_limit = 999;
-
-    auto max_rows =
-        static_cast<size_t>(var_limit / static_cast<int>(std::max<size_t>(1, col_count)));
-    if(max_rows == 0) max_rows = 1;
-    if(max_rows > 1024) max_rows = 1024;
-    return max_rows;
+    constexpr auto default_limit = 999;
+    auto           var_limit     = sqlite3_limit(conn, SQLITE_LIMIT_VARIABLE_NUMBER, -1);
+    auto           safe_cols     = std::max<size_t>(1, col_count);
+    auto           max_rows      = static_cast<size_t>((var_limit > 0 ? var_limit : default_limit) /
+                                        static_cast<int>(safe_cols));
+    return std::clamp<size_t>(max_rows, 1, 1024);
 }
 
 int
@@ -390,11 +388,8 @@ bind_sql_value(sqlite3_stmt* stmt, int idx, const sql_insert_value& value)
     return std::visit(
         [&](auto&& val) {
             using value_type = common::mpl::unqualified_type_t<decltype(val)>;
-            if constexpr(std::is_same_v<value_type, std::monostate>)
-            {
-                return sqlite3_bind_null(stmt, idx);
-            }
-            else if constexpr(std::is_same_v<value_type, std::nullptr_t>)
+            if constexpr(std::is_same_v<value_type, std::monostate> ||
+                         std::is_same_v<value_type, std::nullptr_t>)
             {
                 return sqlite3_bind_null(stmt, idx);
             }
@@ -427,75 +422,60 @@ void
 reset_and_clear_statement(sqlite3_stmt* stmt)
 {
     if(!stmt) return;
+    SQLITE3_CHECK(sqlite3_reset(stmt));
+    SQLITE3_CHECK(sqlite3_clear_bindings(stmt));
+}
 
-    auto reset_rc = sqlite3_reset(stmt);
-    ROCP_FATAL_IF(reset_rc != SQLITE_OK) << "sqlite3_reset failed with error code " << reset_rc;
+sqlite3_stmt*&
+get_or_prepare_batch_statement(rocpd_db&                   db,
+                               const pending_insert_batch& pending,
+                               size_t                      rows_per_exec)
+{
+    auto batch_key =
+        fmt::format("{}:batch:{}:{}", pending.table, rows_per_exec, fmt::join(pending.fields, ","));
 
-    auto clear_rc = sqlite3_clear_bindings(stmt);
-    ROCP_FATAL_IF(clear_rc != SQLITE_OK)
-        << "sqlite3_clear_bindings failed with error code " << clear_rc;
+    auto& stmt = db.statements[batch_key];
+    if(stmt) return stmt;
+
+    auto placeholders     = std::vector(pending.fields.size(), std::string{"?"});
+    auto row_placeholder  = fmt::format("({})", fmt::join(placeholders, ", "));
+    auto row_placeholders = std::vector(rows_per_exec, row_placeholder);
+    auto values_clause    = fmt::format("{}", fmt::join(row_placeholders, ", "));
+    auto fields_csv       = fmt::format("{}", fmt::join(pending.fields, ", "));
+
+    auto sql =
+        fmt::format("INSERT INTO {} ({}) VALUES {};", pending.table, fields_csv, values_clause);
+    SQLITE3_CHECK(sqlite3_prepare_v2(db.conn, sql.c_str(), -1, &stmt, nullptr));
+    return stmt;
 }
 
 void
-flush_pending_insert_batch(pending_insert_batch& pending)
+flush_pending_insert_batch(rocpd_db& db)
 {
+    auto& pending = db.pending_batch;
     if(!pending.is_active || pending.rows.empty()) return;
 
-    ROCP_FATAL_IF(pending.conn == nullptr || pending.cache == nullptr)
-        << "Pending insert batch missing sqlite connection or statement cache";
+    ROCP_FATAL_IF(db.conn == nullptr) << "Pending insert batch missing sqlite connection";
 
     const auto batch_size = pending.rows.size();
     const auto field_size = pending.fields.size();
     ROCP_FATAL_IF(field_size == 0)
         << "Pending insert batch has zero fields for table: " << pending.table;
 
-    const bool   is_full_batch  = (batch_size == pending.max_rows);
-    const size_t statement_rows = (is_full_batch) ? batch_size : size_t{1};
-    const auto   statement_suffix =
-        (is_full_batch) ? std::string_view{"full"} : std::string_view{"single"};
+    // Full batches use a multi-row prepared statement; partial batches fall back to single-row.
+    const size_t rows_per_exec = (batch_size == pending.max_rows) ? batch_size : size_t{1};
+    auto&        stmt          = get_or_prepare_batch_statement(db, pending, rows_per_exec);
 
-    auto batch_key = fmt::format(
-        "{}:batch:{}:{}", pending.table, statement_suffix, fmt::join(pending.fields, ","));
-
-    auto& stmt = (*pending.cache)[batch_key];
-    if(!stmt)
+    for(size_t begin_idx = 0; begin_idx < batch_size; begin_idx += rows_per_exec)
     {
-        auto row_placeholder = std::string{"("};
-        for(size_t i = 0; i < field_size; ++i)
-        {
-            if(i > 0) row_placeholder += ", ";
-            row_placeholder += "?";
-        }
-        row_placeholder += ")";
-
-        auto values_clause = std::string{};
-        values_clause.reserve(statement_rows * row_placeholder.size());
-        for(size_t i = 0; i < statement_rows; ++i)
-        {
-            if(i > 0) values_clause += ", ";
-            values_clause += row_placeholder;
-        }
-
-        auto sql = fmt::format("INSERT INTO {} ({}) VALUES {};",
-                               pending.table,
-                               fmt::join(pending.fields, ", "),
-                               values_clause);
-
-        SQLITE3_CHECK(sqlite3_prepare_v2(pending.conn, sql.c_str(), -1, &stmt, nullptr));
-    }
-
-    auto cleanup_guard = common::scope_destructor{[&]() { reset_and_clear_statement(stmt); }};
-
-    if(is_full_batch)
-    {
+        auto end_idx = std::min(batch_size, begin_idx + rows_per_exec);
         reset_and_clear_statement(stmt);
-
         int bind_idx = 1;
-        for(const auto& row : pending.rows)
+        for(size_t idx = begin_idx; idx < end_idx; ++idx)
         {
+            const auto& row = pending.rows[idx];
             ROCP_FATAL_IF(row.size() != field_size) << "Pending insert batch row has " << row.size()
                                                     << " values, expected " << field_size;
-
             for(const auto& value : row)
             {
                 auto bind_rc = bind_sql_value(stmt, bind_idx++, value);
@@ -507,164 +487,92 @@ flush_pending_insert_batch(pending_insert_batch& pending)
         auto step_rc = sqlite3_step(stmt);
         ROCP_FATAL_IF(step_rc != SQLITE_DONE)
             << "sqlite3_step failed with error code " << step_rc
-            << ", sqlite3_errmsg: " << sqlite3_errmsg(pending.conn) << ", table: " << pending.table
+            << ", sqlite3_errmsg: " << sqlite3_errmsg(db.conn) << ", table: " << pending.table
             << ", batch_size: " << batch_size
             << ", fields: " << fmt::format("{}", fmt::join(pending.fields, ", "));
-    }
-    else
-    {
-        for(const auto& row : pending.rows)
-        {
-            ROCP_FATAL_IF(row.size() != field_size) << "Pending insert batch row has " << row.size()
-                                                    << " values, expected " << field_size;
-
-            reset_and_clear_statement(stmt);
-
-            int bind_idx = 1;
-            for(const auto& value : row)
-            {
-                auto bind_rc = bind_sql_value(stmt, bind_idx++, value);
-                ROCP_FATAL_IF(bind_rc != SQLITE_OK)
-                    << "sqlite3_bind failed with error code " << bind_rc;
-            }
-
-            auto step_rc = sqlite3_step(stmt);
-            ROCP_FATAL_IF(step_rc != SQLITE_DONE)
-                << "sqlite3_step failed with error code " << step_rc
-                << ", sqlite3_errmsg: " << sqlite3_errmsg(pending.conn)
-                << ", table: " << pending.table << ", batch_size: " << batch_size
-                << ", fields: " << fmt::format("{}", fmt::join(pending.fields, ", "));
-        }
     }
 
     pending.rows.clear();
 }
 
 void
-flush_pending_insert_batch(rocpd_db& db)
+finish_pending_insert_batch(rocpd_db& db)
 {
-    auto& pending = db.pending_batch;
-    if(!pending.is_active) return;
-
-    flush_pending_insert_batch(pending);
-    pending = pending_insert_batch{};
+    if(!db.pending_batch.is_active) return;
+    flush_pending_insert_batch(db);
+    db.pending_batch = pending_insert_batch{};
 }
 
-template <template <typename...> class ContainerT, typename... TypesT>
 void
-get_insert_statement_impl(rocpd_db&                                 db,
-                          std::string_view                          _table,
-                          ContainerT<sql_insert_value, TypesT...>&& _data)
+get_insert_statement(rocpd_db& db, std::string_view _table, std::vector<sql_insert_value> _data)
 {
-    auto fields = std::vector<std::string_view>{};
-    auto values = std::vector<sql_insert_value>{};
+    ROCP_FATAL_IF(db.conn == nullptr) << "SQLite connection not set for prepared statements";
 
-    fields.reserve(_data.size() + 1);
-    values.reserve(_data.size() + 1);
+    auto  table   = replace_uuid(db, _table);
+    auto& pending = db.pending_batch;
+
+    // Hot path: batch already active for this table — skip field construction entirely.
+    if(pending.is_active && pending.table == table)
+    {
+        auto values = std::vector<sql_insert_value>{};
+        values.reserve(_data.size());
+        for(auto&& itr : _data)
+            if(!itr.name.empty()) values.emplace_back(std::move(itr));
+
+#if !defined(NDEBUG)
+        ROCP_FATAL_IF(values.size() != pending.fields.size())
+            << "Pending insert batch row has " << values.size() << " values, expected "
+            << pending.fields.size() << " for table: " << table;
+#endif
+
+        pending.rows.emplace_back(std::move(values));
+        if(pending.rows.size() >= pending.max_rows) flush_pending_insert_batch(db);
+        return;
+    }
+
+    // Slow path: first insert or table change — build fields and start a new batch.
+    auto fields = std::vector<std::string>{};
+    auto values = std::vector<sql_insert_value>{};
+    fields.reserve(_data.size());
+    values.reserve(_data.size());
     for(auto&& itr : _data)
     {
         if(itr.name.empty()) continue;
-
         fields.emplace_back(itr.name);
-        values.emplace_back(itr);
+        values.emplace_back(std::move(itr));
     }
 
     if(fields.empty()) return;
 
-    ROCP_FATAL_IF(db.conn == nullptr) << "SQLite connection not set for prepared statements";
+    if(pending.is_active) finish_pending_insert_batch(db);
 
-    auto table = replace_uuid(db, _table);
-
-    auto& pending = db.pending_batch;
-
-    auto same_batch_shape = [&](const pending_insert_batch& batch) {
-        if(batch.table != table) return false;
-        if(batch.fields.size() != fields.size()) return false;
-        return std::equal(batch.fields.begin(),
-                          batch.fields.end(),
-                          fields.begin(),
-                          [](const std::string& lhs, std::string_view rhs) { return lhs == rhs; });
-    };
-
-    // single-batch mode: flush whenever the insert key changes
-    if(pending.is_active && !same_batch_shape(pending))
-    {
-        flush_pending_insert_batch(db);
-    }
-
-    if(!pending.is_active)
-    {
-        pending.is_active = true;
-        pending.conn      = db.conn;
-        pending.cache     = &db.statements;
-        pending.table     = table;
-        pending.fields.clear();
-        pending.fields.reserve(fields.size());
-        for(const auto& field : fields)
-            pending.fields.emplace_back(field);
-        pending.max_rows = get_max_batch_rows(db.conn, fields.size());
-        pending.rows.clear();
-        pending.rows.reserve(pending.max_rows);
-    }
-
-    ROCP_FATAL_IF(pending.conn != db.conn || pending.cache != &db.statements)
-        << "Pending insert batch state mismatch for table: " << table;
-
-#if !defined(NDEBUG)
-    ROCP_FATAL_IF(!same_batch_shape(pending))
-        << "Pending insert batch schema mismatch for table: " << table;
-#endif
-
+    pending.is_active = true;
+    pending.table     = table;
+    pending.fields    = std::move(fields);
+    pending.max_rows  = get_max_batch_rows(db.conn, pending.fields.size());
+    pending.rows.reserve(pending.max_rows);
     pending.rows.emplace_back(std::move(values));
-    if(pending.rows.size() >= pending.max_rows) flush_pending_insert_batch(pending);
-}
-
-template <template <typename...> class ContainerT, typename... TypesT>
-void
-get_insert_statement(rocpd_db&                                 db,
-                     std::string_view                          _table,
-                     ContainerT<sql_insert_value, TypesT...>&& _data)
-{
-    get_insert_statement_impl(
-        db, _table, std::forward<ContainerT<sql_insert_value, TypesT...>>(_data));
-}
-
-void
-get_insert_statement(rocpd_db&                                 db,
-                     std::string_view                          _table,
-                     std::initializer_list<sql_insert_value>&& _data)
-{
-    get_insert_statement_impl(
-        db, _table, std::forward<std::initializer_list<sql_insert_value>>(_data));
+    if(pending.rows.size() >= pending.max_rows) flush_pending_insert_batch(db);
 }
 
 auto
-create_event_impl(rocpd_db& _db, std::initializer_list<sql_insert_value>&& _data, int line)
+create_event(rocpd_db& _db, std::initializer_list<sql_insert_value> _data)
 {
-    common::consume_args(_db, line);
-    auto evt_id    = _db.get_event_id();
-    auto _data_vec = std::vector<sql_insert_value>{};
-
-    _data_vec.reserve(_data.size() + 1);
-    _data_vec.emplace_back(insert_value("id", evt_id));
-    for(auto&& itr : _data)
-        _data_vec.emplace_back(itr);
-
-    get_insert_statement(_db, "rocpd_event{{uuid}}", std::move(_data_vec));
-
+    auto evt_id = _db.get_event_id();
+    auto data   = std::vector<sql_insert_value>{insert_value("id", evt_id)};
+    data.insert(data.end(), _data.begin(), _data.end());
+    get_insert_statement(_db, "rocpd_event{{uuid}}", std::move(data));
     return evt_id;
 }
 
 uint64_t
-get_track_id_impl(rocpd_db&        _db,
-                  uint64_t         node_id,
-                  pid_t            pid,
-                  pid_t            tid,
-                  uint64_t         name_id,
-                  std::string_view extdata,
-                  int              line)
+get_track_id(rocpd_db&        _db,
+             uint64_t         node_id,
+             pid_t            pid,
+             pid_t            tid,
+             uint64_t         name_id,
+             std::string_view extdata)
 {
-    common::consume_args(_db, line);
     auto _track = track_data{node_id, pid, tid, name_id};
     auto itr    = _db.tracks.find(_track);
     if(itr == _db.tracks.end())
@@ -687,9 +595,6 @@ get_track_id_impl(rocpd_db&        _db,
     return itr->second;
 }
 
-// keep macro wrappers for call-site consistency
-#define create_event(...) create_event_impl(__VA_ARGS__, __LINE__)
-#define get_track_id(...) get_track_id_impl(__VA_ARGS__, __LINE__)
 }  // namespace
 
 size_t
@@ -913,7 +818,7 @@ write_rocpd(
     const generator<rocprofiler_buffer_tracing_rocdecode_api_ext_record_t>& rocdecode_api_gen,
     const generator<tool_counter_record_t>&                                 counter_collection_gen)
 {
-    auto get_simple_timer = [](std::string_view label) {
+    static auto get_simple_timer = [](std::string_view label) {
         return common::simple_timer{fmt::format("SQLite3 generation :: {:24}", label)};
     };
 
@@ -926,14 +831,13 @@ write_rocpd(
     const uint64_t this_pid         = tool_metadata.process_id;
     const uint64_t this_pid_init_ns = tool_metadata.process_start_ns;
     const uint64_t this_ppid        = tool_metadata.parent_process_id;
+    const uint64_t this_nid         = node_id;
 
     ROCP_WARNING << fmt::format(
-        "writing SQL database for process {} on node {}", this_pid, node_id);
+        "writing SQL database for process {} on node {}", this_pid, this_nid);
 
     auto      db   = rocpd_db{};
     sqlite3*& conn = db.conn;
-    auto      _flush_pending_on_exit =
-        common::scope_destructor{[&db]() { flush_pending_insert_batch(db); }};
 
     {
         const auto& mach_id = tool_metadata.node_data.machine_id;
@@ -1111,7 +1015,7 @@ write_rocpd(
         }
     }
 
-    auto insert_node_data = [&db, &tool_metadata, node_id, node_hash, &get_simple_timer]() {
+    auto insert_node_data = [&db, &tool_metadata, node_id, node_hash]() {
         auto        _sqlgenperf_rocpd = get_simple_timer("rocpd_info_node");
         const auto& _info             = tool_metadata.node_data;
 
@@ -1131,7 +1035,7 @@ write_rocpd(
             });
     };
 
-    auto insert_process_data = [&db, &tool_metadata, &cfg, node_id, this_pid, &get_simple_timer]() {
+    auto insert_process_data = [&db, &tool_metadata, &cfg, node_id, this_pid]() {
         auto _sqlgenperf_rocpd = get_simple_timer("rocpd_info_process");
         auto json_cfg          = get_json_string([&cfg](auto& ar) { cfg.save(ar); });
         auto json_env          = get_json_string([](auto& ar) {
@@ -1161,7 +1065,6 @@ write_rocpd(
         auto command = fmt::format(
             "{}",
             fmt::join(tool_metadata.command_line.begin(), tool_metadata.command_line.end(), " "));
-        auto _command = command;
 
         get_insert_statement(db,
                              "rocpd_info_process{{uuid}}",
@@ -1174,13 +1077,13 @@ write_rocpd(
                                  insert_value("fini", tool_metadata.process_end_ns),
                                  insert_value("start", tool_metadata.process_start_ns),
                                  insert_value("end", tool_metadata.process_end_ns),
-                                 insert_value("command", _command),
+                                 insert_value("command", command),
                                  insert_value("environment", json_env),
                                  insert_value("extdata", json_cfg),
                              });
     };
 
-    auto insert_agent_data = [&db, &tool_metadata, node_id, this_pid, &get_simple_timer]() {
+    auto insert_agent_data = [&db, &tool_metadata, node_id, this_pid]() {
         auto _sqlgenperf_rocpd = get_simple_timer("rocpd_info_agent");
         auto _deferred         = sql::deferred_transaction{db.conn};
         for(auto itr : tool_metadata.agents)
@@ -1214,11 +1117,7 @@ write_rocpd(
         }
     };
 
-    auto insert_kernel_code_object_data = [&db,
-                                           &tool_metadata,
-                                           node_id,
-                                           this_pid,
-                                           &get_simple_timer]() {
+    auto insert_kernel_code_object_data = [&db, &tool_metadata, node_id, this_pid]() {
         auto _sqlgenperf_rocpd = get_simple_timer("rocpd kernel info");
         auto _deferred         = sql::deferred_transaction{db.conn};
         for(const auto& itr : tool_metadata.get_code_objects())
@@ -1274,7 +1173,7 @@ write_rocpd(
         }
     };
 
-    auto insert_pmc_data = [&db, &tool_metadata, node_id, this_pid, &get_simple_timer]() {
+    auto insert_pmc_data = [&db, &tool_metadata, node_id, this_pid]() {
         auto _sqlgenperf_rocpd = get_simple_timer("rocpd_info_pmc");
         auto recorded          = std::unordered_set<rocprofiler_counter_id_t>{};
         auto _deferred         = sql::deferred_transaction{db.conn};
@@ -1289,10 +1188,10 @@ write_rocpd(
                     if(agent) cereal::save(ar, *agent);
                 });
 
-                auto _name        = aitr.name;
-                auto _description = aitr.description;
-                auto _block       = aitr.block;
-                auto _expression  = aitr.expression;
+                const auto* _name        = aitr.name;
+                const auto* _description = aitr.description;
+                const auto* _block       = aitr.block;
+                const auto* _expression  = aitr.expression;
 
                 get_insert_statement(
                     db,
@@ -1471,7 +1370,7 @@ write_rocpd(
     };
 
     auto insert_pmc_event_data =
-        [&db, &tool_metadata, &counter_collection_gen, &get_simple_timer](auto& dispatch_evt_ids) {
+        [&db, &tool_metadata, &counter_collection_gen](auto& dispatch_evt_ids) {
             auto   _sqlgenperf_rocpd = get_simple_timer("rocpd_pmc_event");
             auto   _deferred         = sql::deferred_transaction{db.conn};
             size_t idx               = tool_metadata.pmc_event_offset;
@@ -1498,61 +1397,56 @@ write_rocpd(
             }
         };
 
-    auto insert_memory_copy_data = [&db,
-                                    &tool_metadata,
-                                    &string_entries,
-                                    node_id,
-                                    this_pid,
-                                    &get_simple_timer,
-                                    &get_thread_id,
-                                    &get_stream_id](const auto& _gen) {
-        auto   _sqlgenperf_rocpd = get_simple_timer("rocpd_memory_copy");
-        auto   _deferred         = sql::deferred_transaction{db.conn};
-        size_t copy_idx          = 1;
+    auto insert_memory_copy_data =
+        [&db, &tool_metadata, &string_entries, node_id, this_pid, &get_thread_id, &get_stream_id](
+            const auto& _gen) {
+            auto   _sqlgenperf_rocpd = get_simple_timer("rocpd_memory_copy");
+            auto   _deferred         = sql::deferred_transaction{db.conn};
+            size_t copy_idx          = 1;
 
-        for(auto pitr : _gen)
-        {
-            for(auto itr : _gen.get(pitr))
+            for(auto pitr : _gen)
             {
-                // insert thread info if it doesn't already exist
-                get_thread_id(itr.thread_id);
+                for(auto itr : _gen.get(pitr))
+                {
+                    // insert thread info if it doesn't already exist
+                    get_thread_id(itr.thread_id);
 
-                auto kind = tool_metadata.buffer_names.at(itr.kind);
-                auto name = tool_metadata.buffer_names.at(itr.kind, itr.operation);
+                    auto kind = tool_metadata.buffer_names.at(itr.kind);
+                    auto name = tool_metadata.buffer_names.at(itr.kind, itr.operation);
 
-                auto evt_id = create_event(
-                    db,
-                    {
-                        insert_value("category_id", string_entries.at(kind)),
-                        insert_value("stack_id", itr.correlation_id.internal),
-                        insert_value("parent_stack_id", itr.correlation_id.internal),
-                        insert_value("correlation_id", itr.correlation_id.external.value),
-                    });
+                    auto evt_id = create_event(
+                        db,
+                        {
+                            insert_value("category_id", string_entries.at(kind)),
+                            insert_value("stack_id", itr.correlation_id.internal),
+                            insert_value("parent_stack_id", itr.correlation_id.internal),
+                            insert_value("correlation_id", itr.correlation_id.external.value),
+                        });
 
-                get_insert_statement(
-                    db,
-                    "rocpd_memory_copy{{uuid}}",
-                    {
-                        insert_value("id", copy_idx++),
-                        insert_value("nid", node_id),
-                        insert_value("pid", this_pid),
-                        insert_value("tid", itr.thread_id),
-                        insert_value("start", itr.start_timestamp),
-                        insert_value("end", itr.end_timestamp),
-                        insert_value("name_id", string_entries.at(name)),
-                        insert_value("dst_agent_id",
-                                     tool_metadata.get_agent(itr.dst_agent_id)->node_id),
-                        insert_value("src_agent_id",
-                                     tool_metadata.get_agent(itr.src_agent_id)->node_id),
-                        insert_value("dst_address", itr.dst_address.value),
-                        insert_value("src_address", itr.src_address.value),
-                        insert_value("size", itr.bytes),
-                        insert_value("stream_id", get_stream_id(itr.stream_id)),
-                        insert_value("event_id", evt_id),
-                    });
+                    get_insert_statement(
+                        db,
+                        "rocpd_memory_copy{{uuid}}",
+                        {
+                            insert_value("id", copy_idx++),
+                            insert_value("nid", node_id),
+                            insert_value("pid", this_pid),
+                            insert_value("tid", itr.thread_id),
+                            insert_value("start", itr.start_timestamp),
+                            insert_value("end", itr.end_timestamp),
+                            insert_value("name_id", string_entries.at(name)),
+                            insert_value("dst_agent_id",
+                                         tool_metadata.get_agent(itr.dst_agent_id)->node_id),
+                            insert_value("src_agent_id",
+                                         tool_metadata.get_agent(itr.src_agent_id)->node_id),
+                            insert_value("dst_address", itr.dst_address.value),
+                            insert_value("src_address", itr.src_address.value),
+                            insert_value("size", itr.bytes),
+                            insert_value("stream_id", get_stream_id(itr.stream_id)),
+                            insert_value("event_id", evt_id),
+                        });
+                }
             }
-        }
-    };
+        };
 
     auto insert_memory_alloc_data = [&db,
                                      &tool_metadata,
@@ -1936,8 +1830,6 @@ write_rocpd(
         auto indexes_schema    = read_schema_file(db, ROCPD_SQL_SCHEMA_ROCPD_INDEXES);
         execute_raw_sql_statements(conn, indexes_schema);
     }
-
-    flush_pending_insert_batch(db);
 }
 }  // namespace tool
 }  // namespace rocprofiler
