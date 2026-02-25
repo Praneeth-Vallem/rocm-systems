@@ -108,6 +108,7 @@ class AmdSmiStatus(IntEnum):
     INIT_ERROR          = amdsmi_wrapper.AMDSMI_STATUS_INIT_ERROR
     REFCOUNT_OVERFLOW   = amdsmi_wrapper.AMDSMI_STATUS_REFCOUNT_OVERFLOW
     DIRECTORY_NOT_FOUND = amdsmi_wrapper.AMDSMI_STATUS_DIRECTORY_NOT_FOUND
+    IPC_ERROR           = amdsmi_wrapper.AMDSMI_STATUS_IPC_ERROR
     BUSY                = amdsmi_wrapper.AMDSMI_STATUS_BUSY
     NOT_FOUND           = amdsmi_wrapper.AMDSMI_STATUS_NOT_FOUND
     NOT_INIT            = amdsmi_wrapper.AMDSMI_STATUS_NOT_INIT
@@ -730,7 +731,7 @@ def _format_bad_page_info(bad_page_info, bad_page_count: ctypes.c_uint32) -> Lis
     return table_records
 
 
-def _format_bdf(amdsmi_bdf: amdsmi_wrapper.amdsmi_bdf_t) -> str:
+def _format_bdf(amdsmi_bdf: Union[amdsmi_wrapper.amdsmi_bdf_t, amdsmi_wrapper.struct_amdsmi_bdf_t]) -> str:
     """
     Format BDF struct to readable data.
 
@@ -741,10 +742,15 @@ def _format_bdf(amdsmi_bdf: amdsmi_wrapper.amdsmi_bdf_t) -> str:
     Returns:
         `str`: String containing BDF data in a readable format.
     """
-    domain = hex(amdsmi_bdf.domain_number)[2:].zfill(4)
-    bus = hex(amdsmi_bdf.bus_number)[2:].zfill(2)
-    device = hex(amdsmi_bdf.device_number)[2:].zfill(2)
-    function = hex(amdsmi_bdf.function_number)[2:]
+    try:
+        struct = amdsmi_bdf.struct_amdsmi_bdf_t
+    except AttributeError:
+        struct = amdsmi_bdf
+
+    domain = hex(struct.domain_number)[2:].zfill(4)
+    bus = hex(struct.bus_number)[2:].zfill(2)
+    device = hex(struct.device_number)[2:].zfill(2)
+    function = hex(struct.function_number)[2:]
     return domain + ":" + bus + ":" + device + "." + function
 
 
@@ -2199,14 +2205,17 @@ def amdsmi_get_cpu_socket_count():
     return sock_count.value
 
 def _amdsmi_init_enum_flag_is_valid(flag):
+    """Validate that flag contains only valid initialization bits."""
     if flag == amdsmi_wrapper.AMDSMI_INIT_ALL_PROCESSORS:
         return True
-    valid = False
+    
+    # Build mask of all valid flags (excluding ALL_PROCESSORS)
+    valid_mask = 0
     for enum_flag in AmdSmiInitFlags:
-        if (flag & enum_flag) == enum_flag:
-            valid = True
-            break
-    return valid
+        if enum_flag != AmdSmiInitFlags.INIT_ALL_PROCESSORS:
+            valid_mask |= enum_flag.value
+    # Check if flag contains only valid bits and is not zero
+    return flag != 0 and (flag & ~valid_mask) == 0
 
 def amdsmi_init(flag=AmdSmiInitFlags.INIT_AMD_GPUS):
     if not _amdsmi_init_enum_flag_is_valid(flag):
@@ -2682,7 +2691,11 @@ def amdsmi_get_gpu_asic_info(
     if asic_info["asic_serial"]:
         asic_serial_string = asic_info["asic_serial"]
         asic_serial_hex = int(asic_serial_string, base=16)
-        asic_info["asic_serial"] = str.format("0x{:016X}", asic_serial_hex)
+        # Check if asic_serial is available
+        if asic_serial_hex == MaxUIntegerTypes.UINT64_T:
+            asic_info["asic_serial"] = "N/A"
+        else:
+            asic_info["asic_serial"] = str.format("0x{:016X}", asic_serial_hex)
     else:
         asic_info["asic_serial"] = "N/A"
 
@@ -3260,15 +3273,19 @@ def amdsmi_get_gpu_total_ecc_count(
     }
 
 def amdsmi_get_gpu_cper_entries(
-    processor_handle: processor_handle_t,
+    device_handle: Union[amdsmi_wrapper.amdsmi_processor_handle, Path],
     severity_mask: int,
     buffer_size: int = 4 * 1048576,
     cursor: int = 0
 ) -> Tuple[Dict[str, Any], int, List[Dict[str, Any]], int]:
 
-    if not isinstance(processor_handle, amdsmi_wrapper.amdsmi_processor_handle):
+    if isinstance(device_handle, Path):
+        if not os.path.isfile(device_handle):
+            raise AmdSmiParameterException(device_handle, str)
+        device_handle = ctypes.c_char_p(str(device_handle).encode("utf-8"))
+    elif not isinstance(device_handle, amdsmi_wrapper.amdsmi_processor_handle):
         raise AmdSmiParameterException(
-            processor_handle, amdsmi_wrapper.amdsmi_processor_handle
+            device_handle, amdsmi_wrapper.amdsmi_processor_handle
         )
     if not isinstance(severity_mask, int):
         raise AmdSmiParameterException(severity_mask, int)
@@ -3290,7 +3307,7 @@ def amdsmi_get_gpu_cper_entries(
 
     # Call the underlying AMD-SMI API.
     status_code = amdsmi_wrapper.amdsmi_get_gpu_cper_entries(
-        processor_handle,
+        device_handle,
         ctypes.c_uint32(severity_mask),
         buf,
         ctypes.byref(buf_size),
@@ -3330,9 +3347,9 @@ def amdsmi_get_gpu_cper_entries(
         )
 
         serial_number = ""
-        if isinstance(processor_handle, amdsmi_wrapper.amdsmi_processor_handle):
+        if isinstance(device_handle, amdsmi_wrapper.amdsmi_processor_handle):
             try:
-                board_info = amdsmi_get_gpu_board_info(processor_handle)
+                board_info = amdsmi_get_gpu_board_info(device_handle)
                 serial_number = board_info.get('product_serial', "")
             except Exception:
                 serial_number = ""
@@ -4030,8 +4047,8 @@ def amdsmi_get_link_metrics(processor_handle: processor_handle_t):
         link = link_metrics.links[i]
         links.append({
             "bdf": _format_bdf(link.bdf),
-            "bit_rate": link.bit_rate,
-            "max_bandwidth": link.max_bandwidth,
+            "bit_rate": _validate_if_max_uint(link.bit_rate, MaxUIntegerTypes.UINT32_T),
+            "max_bandwidth": _validate_if_max_uint(link.max_bandwidth, MaxUIntegerTypes.UINT32_T),
             "link_type": link.link_type,
             "read": link.read,
             "write": link.write,
@@ -5244,34 +5261,6 @@ def amdsmi_get_node_handle(processor_handle):
     return node_handle
 
 
-def amdsmi_get_device_handle_from_node(node_handle):
-    """
-    Get the processor (device) handle associated with a node handle.
-
-    This function retrieves the processor (device) handle from a node handle.
-    This is the inverse operation of amdsmi_get_node_handle.
-
-    Args:
-        node_handle: A node handle (amdsmi_node_handle) to get the device handle from.
-
-    Returns:
-        amdsmi_processor_handle: The processor handle associated with the node.
-
-    Raises:
-        AmdSmiParameterException: If node_handle is not the correct type.
-        AmdSmiLibraryException: If the library call fails.
-    """
-    if not isinstance(node_handle, amdsmi_wrapper.amdsmi_node_handle):
-        raise AmdSmiParameterException(node_handle, amdsmi_wrapper.amdsmi_node_handle)
-
-    processor_handle = amdsmi_wrapper.amdsmi_processor_handle()
-    _check_res(
-        amdsmi_wrapper.amdsmi_get_device_handle_from_node(node_handle, ctypes.byref(processor_handle))
-    )
-
-    return processor_handle
-
-
 def amdsmi_get_npm_info(node_handle: processor_handle_t) -> Dict[str, Any]:
     if not isinstance(node_handle, amdsmi_wrapper.amdsmi_node_handle):
         raise AmdSmiParameterException(node_handle, amdsmi_wrapper.amdsmi_node_handle)
@@ -5538,36 +5527,25 @@ def amdsmi_get_xgmi_plpd(
     )
 
     policies = []
-    for i in range(policy.num_supported):
+    for i in range(0, policy.num_supported):
         try:
-            # Access the policy entry directly
-            policy_entry = policy.policies[i]
-            policy_id = policy_entry.policy_id
-
-            # Handle the policy description more carefully
-            policy_desc_bytes = policy_entry.policy_description
-            if policy_desc_bytes:
-                # Convert ctypes array to bytes and decode
-                policy_desc = ctypes.string_at(policy_desc_bytes).decode('utf-8').rstrip('\x00')
-            else:
-                policy_desc = ""
-
+            policy_id = policy.policies[i].policy_id
+            desc = policy.policies[i].policy_description
             policies.append({
                 'policy_id': policy_id,
-                'policy_description': policy_desc
+                'policy_description': desc.decode()
             })
         except (UnicodeDecodeError, AttributeError, ValueError):
             # Fallback for problematic entries
             policies.append({
-                'policy_id': 0,  # Default fallback
+                'policy_id': 0,
                 'policy_description': ""
             })
 
-    # Get current policy ID correctly
     if policy.current < policy.num_supported:
         current_id = policy.policies[policy.current].policy_id
     else:
-        current_id = 0  # Fallback
+        current_id = 0
 
     return {
         "num_supported": policy.num_supported,

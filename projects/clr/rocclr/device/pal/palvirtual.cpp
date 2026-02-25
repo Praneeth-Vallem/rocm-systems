@@ -1724,16 +1724,6 @@ void VirtualGPU::submitMapMemory(amd::MapMemoryCommand& vcmd) {
           bufferFromImage->release();
         }
       } else {
-        // Validate if it's a view for a map of mip level
-        if (vcmd.memory().parent() != nullptr) {
-          amd::Image* amdImage = vcmd.memory().parent()->asImage();
-          if ((amdImage != nullptr) && (amdImage->getMipLevels() > 1)) {
-            // Save map write info in the parent object
-            dev().getGpuMemory(amdImage)->saveMapInfo(vcmd.mapPtr(), vcmd.origin(), vcmd.size(),
-                                                      vcmd.mapFlags(), vcmd.isEntireMemory(),
-                                                      vcmd.memory().asImage());
-          }
-        }
         if (!blitMgr().copyImageToBuffer(*memory, *memory->mapMemory(), vcmd.origin(), dstOrigin,
                                          vcmd.size(), vcmd.isEntireMemory())) {
           LogError("submitMapMemory() - copy failed");
@@ -1749,9 +1739,6 @@ void VirtualGPU::submitMapMemory(amd::MapMemoryCommand& vcmd) {
 }
 
 void VirtualGPU::submitUnmapMemory(amd::UnmapMemoryCommand& vcmd) {
-  bool unmapMip = false;
-  amd::Image* amdImage;
-  {
     // Make sure VirtualGPU has an exclusive access to the resources
     amd::ScopedLock lock(execution());
 
@@ -1763,19 +1750,6 @@ void VirtualGPU::submitUnmapMemory(amd::UnmapMemoryCommand& vcmd) {
       return;
     }
     profilingBegin(vcmd);
-
-    // Check if image is a mipmap and assign a saved view
-    amdImage = owner->asImage();
-    if ((amdImage != nullptr) && (amdImage->getMipLevels() > 1) &&
-        (writeMapInfo->baseMip_ != nullptr)) {
-      // Assign mip level view
-      amdImage = writeMapInfo->baseMip_;
-      // Clear unmap flags from the parent image
-      memory->clearUnmapInfo(vcmd.mapPtr());
-      memory = dev().getGpuMemory(amdImage);
-      unmapMip = true;
-      writeMapInfo = memory->writeMapInfo(vcmd.mapPtr());
-    }
 
     // We used host memory
     if ((owner->getHostMem() != nullptr) && memory->isDirectMap()) {
@@ -1800,7 +1774,6 @@ void VirtualGPU::submitUnmapMemory(amd::UnmapMemoryCommand& vcmd) {
       if (writeMapInfo->isUnmapWrite()) {
         amd::Coord3D srcOrigin(0, 0, 0);
         // Target is a remote resource, so copy
-        assert(memory->mapMemory() != nullptr);
         if (memory->desc().buffer_) {
           if (!blitMgr().copyBuffer(*memory->mapMemory(), *memory, writeMapInfo->origin_,
                                     writeMapInfo->origin_, writeMapInfo->region_,
@@ -1848,13 +1821,6 @@ void VirtualGPU::submitUnmapMemory(amd::UnmapMemoryCommand& vcmd) {
     memory->clearUnmapInfo(vcmd.mapPtr());
 
     profilingEnd(vcmd);
-  }
-  // Release a view for a mipmap map
-  if (unmapMip) {
-    // Memory release should be outside of the execution lock,
-    // because mapMemory_ isn't marked for a specifc GPU
-    amdImage->release();
-  }
 }
 
 bool VirtualGPU::fillMemory(cl_command_type type, amd::Memory* amdMemory, const void* pattern,
