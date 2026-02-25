@@ -21,7 +21,7 @@ THE SOFTWARE.
 */
 
 #include <hip_test_common.hh>
-
+#include <hip_test_helper.hh>
 /**
  * @addtogroup hipGetDeviceProperties hipGetDeviceProperties
  * @{
@@ -343,21 +343,6 @@ TEST_CASE("Print_Out_Properties") {
   std::flush(std::cout);
 }
 
-static void print_uuid(const char* title, const int w, const hipUUID& uuid) {
-  // Print the title normally
-  std::cout << std::setw(w) << title;
-  // Now switch to hex formatting for the UUID bytes
-  std::cout << std::right << std::hex << std::setfill('0');
-  for (int i = 0; i < 16; ++i) {
-    std::cout << std::setw(2) << (unsigned int)(unsigned char)uuid.bytes[i];
-    if (i == 3 || i == 5 || i == 7 || i == 9) {
-      std::cout << "-";
-    }
-  }
-  // Restore stream state
-  std::cout << std::setfill(' ') << std::dec << std::left << "\n";
-}
-
 /**
  * Test Description
  * ------------------------
@@ -379,8 +364,8 @@ TEST_CASE("Print_Out_Properties_6.0") {
   std::cout << std::left;
   std::cout << std::setw(w) << "New Attributes added in Rocm 6.0" << "\n";
 #if HT_AMD
-  print_uuid("uuid: ", w, properties.uuid);
-  print_uuid("cuid: ", w, properties.cuid);
+  HipTest::printUuid("uuid: ", w, properties.uuid);
+  HipTest::printUuid("cuid: ", w, properties.cuid);
 #endif
   std::cout << std::setw(w) << "maxTexture1DLayered.width: " << properties.maxTexture1DLayered[0]
             << "\n";
