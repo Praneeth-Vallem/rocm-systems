@@ -4767,25 +4767,65 @@ class AMDSMICommands():
 
         # Handle args
         if self.helpers.is_baremetal():
-            if isinstance(args.fan, int):
-                # Convert fan speed to percentage
-                # Note: amdsmi_set_gpu_fan_speed expects fan speed in RPM, so
-                # we convert the value to a percentage based on the maximum fan speed of 255 RPM.
-                # We need to round down the user's passed fan speed % to the nearest whole number.
-                # This allows us to match the float -> int conversion when converting from percentage to RPM (as previously passed by the parser).
-                fan_percentage = int((int(args.fan) / 255) * 100 // 1) # round down (aka floor) to nearest whole number
+            if isinstance(args.fan, int) or isinstance(args.fan, tuple):
+                # Check if this is RX7900XTX or RX7700XT (Navi3x)
                 try:
-                    amdsmi_interface.amdsmi_set_gpu_fan_speed(args.gpu, 0, args.fan)
+                    asic_info = amdsmi_interface.amdsmi_get_gpu_asic_info(args.gpu)
+                    device_id = asic_info.get('device_id')
+                    if isinstance(device_id, str):
+                        device_id = int(device_id, 16) if device_id.startswith('0x') else int(device_id)
+                    is_navi3x = device_id == 0x744C or device_id == 0x747E  # RX7900XTX or RX7700XT
+                except:
+                    is_navi3x = False
+
+                # Parse input: args.fan is always (value, is_percentage) tuple from parser
+                input_value, is_percentage = args.fan
+
+                # Convert based on GPU type and input format
+                if is_navi3x:
+                    if is_percentage:
+                        # 0-100% → 23-100 hardware value
+                        hw_value = int(23 + (input_value * 77 / 100))
+                        fan_value = hw_value  # Show actual hardware value
+                        fan_percentage = input_value  # Show the input percentage
+                    else:
+                        # Direct hardware value - only 23-100 valid for Navi3x
+                        if 23 <= input_value <= 100:
+                            hw_value = int(input_value)
+                            fan_value = input_value
+                            fan_percentage = int(((input_value - 23) / 77) * 100)
+                        else:
+                            # Invalid value for Navi3x GPUs
+                            result = f"Invalid fan speed value {input_value} for Navi3x GPU. Valid range: 23-100 or use percentage (0-100%)"
+                            self.logger.store_output(args.gpu, 'fan', result)
+                            self.logger.print_output()
+                            self.logger.clear_multiple_devices_output()
+                            return
+                else:
+                    # Legacy GPU
+                    if is_percentage:
+                        # 0-100% → 0-255 PWM
+                        hw_value = int((input_value / 100) * 255)
+                        fan_value = hw_value
+                        fan_percentage = input_value
+                    else:
+                        # Direct PWM value (0-255)
+                        hw_value = int(input_value)
+                        fan_value = input_value
+                        fan_percentage = int((input_value / 255) * 100)
+
+                try:
+                    amdsmi_interface.amdsmi_set_gpu_fan_speed(args.gpu, 0, hw_value)
                 except amdsmi_exception.AmdSmiLibraryException as e:
                     if e.get_error_code() == amdsmi_interface.amdsmi_wrapper.AMDSMI_STATUS_NO_PERM:
                         raise PermissionError('Command requires elevation') from e
-                    result = f"[{e.get_error_info(detailed=False)}] Unable to set fan speed to {args.fan} RPM ({fan_percentage}%)"
+                    result = f"[{e.get_error_info(detailed=False)}] Unable to set fan speed to {fan_value} RPM ({fan_percentage}%)"
                     self.logger.store_output(args.gpu, 'fan', result)
                     self.logger.print_output()
                     self.logger.clear_multiple_devices_output()
                     return
 
-                self.logger.store_output(args.gpu, 'fan', f"Successfully set fan speed to {args.fan} RPM ({fan_percentage}%)")
+                self.logger.store_output(args.gpu, 'fan', f"Successfully set fan speed to {fan_value} RPM ({fan_percentage}%)")
                 self.logger.print_output()
                 self.logger.clear_multiple_devices_output()
                 return
