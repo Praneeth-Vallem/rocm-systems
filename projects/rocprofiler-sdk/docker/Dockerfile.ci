@@ -112,6 +112,6 @@ RUN set -euo pipefail; \
     echo "Verified base ROCm ${BASE_VERSION} at /opt/rocm-${BASE_VERSION}";
 
 # Expose ROCM_VERSION directly from the installed ROCm metadata
-RUN echo "export ROCM_VERSION=$(cat /opt/rocm/.info/version)" > /etc/profile.d/rocm-version.sh
+RUN echo "export ROCM_VERSION=$(tr -d '[:space:]' < /opt/rocm/.info/version)" > /etc/profile.d/rocm-version.sh
 
 ENV BASH_ENV=/etc/profile.d/rocm-version.sh
