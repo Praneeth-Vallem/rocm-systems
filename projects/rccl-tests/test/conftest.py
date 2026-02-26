@@ -151,6 +151,12 @@ def gpu_info():
     ngpus = detect_gpu_count()
     if ngpus == 0:
         pytest.exit("No GPUs detected", returncode=1)
+    # Require a power-of-two GPU count so that log2(ngpus) is an integer
+    if ngpus & (ngpus - 1) != 0:
+        pytest.exit(
+            f"RCCL tests require a power-of-two number of GPUs; detected {ngpus}",
+            returncode=1,
+        )
     return {"ngpus": ngpus, "log_ngpus": int(math.log2(ngpus))}
 
 
