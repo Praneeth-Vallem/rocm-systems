@@ -5,7 +5,7 @@ import os
 import re
 import socket
 import subprocess
-import math
+import warnings
 import pytest
 
 BUILD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build")
@@ -37,6 +37,7 @@ PROFILES = {
         "datatypes":    ["float", "half", "bfloat16", "fp8_e5m2"],
         "memory_types": ["coarse"],
         "step_factor":  4,
+        "gpu_sweep":    "power_of_2",
     },
     "stress": {
         "byte_ranges":  [("4", "1K"), ("1K", "1M"), ("1M", "4G")],
@@ -46,6 +47,7 @@ PROFILES = {
                          "fp8_e4m3", "fp8_e5m2"],
         "memory_types": ["coarse", "fine", "host", "managed"],
         "step_factor":  2,
+        "gpu_sweep":    "all",
     },
 }
 DEFAULT_PROFILE = "smoke"
@@ -151,13 +153,7 @@ def gpu_info():
     ngpus = detect_gpu_count()
     if ngpus == 0:
         pytest.exit("No GPUs detected", returncode=1)
-    # Require a power-of-two GPU count so that log2(ngpus) is an integer
-    if ngpus & (ngpus - 1) != 0:
-        pytest.exit(
-            f"RCCL tests require a power-of-two number of GPUs; detected {ngpus}",
-            returncode=1,
-        )
-    return {"ngpus": ngpus, "log_ngpus": int(math.log2(ngpus))}
+    return {"ngpus": ngpus}
 
 
 @pytest.fixture(scope="session")
@@ -189,3 +185,29 @@ def memory_types(profile):
 @pytest.fixture(scope="session")
 def step_factor(profile):
     return profile["step_factor"]
+
+
+@pytest.fixture(scope="session")
+def gpu_counts(gpu_info, profile):
+    ngpus = gpu_info["ngpus"]
+    sweep = profile["gpu_sweep"]
+
+    if sweep == "power_of_2":
+        requested = [2**x for x in range(ngpus.bit_length())]
+        counts = [x for x in requested if x <= ngpus]
+    elif sweep == "all":
+        counts = list(range(1, ngpus + 1))
+        requested = counts
+    else:
+        requested = list(sweep)
+        counts = [x for x in requested if x <= ngpus]
+
+    skipped = sorted(set(requested) - set(counts))
+    if skipped:
+        warnings.warn(
+            f"gpu_sweep: requested {requested} but only {ngpus} GPUs available; "
+            f"skipped {skipped}",
+            stacklevel=1,
+        )
+
+    return [str(x) for x in counts]

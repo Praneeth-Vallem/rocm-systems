@@ -49,7 +49,7 @@ python3 -m pytest -m "not mpi"
 
 ## Message Size Profiles
 
-The `--msg-profile` flag controls which byte ranges, operations, datatypes, and memory types are tested. This allows the same test files to serve both quick CI validation and thorough nightly sweeps.
+The `--msg-profile` flag controls which byte ranges, operations, datatypes, memory types, and GPU sweep strategy are tested. This allows the same test files to serve both quick CI validation and thorough nightly sweeps.
 
 ### `smoke` (default)
 
@@ -57,6 +57,8 @@ The `--msg-profile` flag controls which byte ranges, operations, datatypes, and 
 - **Operations**: sum (where applicable)
 - **Datatypes**: float, half, bfloat16, fp8_e5m2
 - **Memory types**: coarse
+- **GPU sweep**: power-of-2 counts (1, 2, 4, ... up to available GPUs)
+- **Step factor**: 4
 
 Intended for CI precheckin -- quick validation across all collectives with limited parameter combinations.
 
@@ -70,12 +72,22 @@ python3 -m pytest --msg-profile=smoke
 - **Operations**: sum, prod, min, max, avg, mulsum
 - **Datatypes**: int8, uint8, int32, uint32, int64, uint64, half, float, double, bfloat16, fp8_e4m3, fp8_e5m2
 - **Memory types**: coarse, fine, host, managed
+- **GPU sweep**: all counts from 1 to available GPUs
+- **Step factor**: 2
 
 Intended for nightly CI -- full coverage of all parameter combinations and large message sizes.
 
 ```shell
 python3 -m pytest --msg-profile=stress
 ```
+
+### GPU Sweep Behavior
+
+Each profile controls how GPU counts are swept via the `gpu_sweep` field:
+
+- **`power_of_2`** (smoke): Tests run on 1, 2, 4, 8, ... GPUs up to the number available.
+- **`all`** (stress): Tests run on every GPU count from 1 to the number available.
+- **Explicit list**: Custom profiles can specify an explicit list of GPU counts (e.g., `[1, 2, 5]`). Counts exceeding the available GPUs are silently filtered out with a warning in the pytest header.
 
 ## Test Markers
 

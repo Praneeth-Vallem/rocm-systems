@@ -203,7 +203,7 @@ Note that the reported bandwidth is per group, hence to get the total bandwidth 
 
 See [test/README.md](test/README.md) for full documentation on running and configuring the pytest-based unit test suite, including message size profiles, test markers, and CI integration.
 
-Quick start (This will run rccl-tests UnitTests for all collectives, 1KB - 1GB with a step factor of 4, for float32, float16, bfloat16, and fp8_e5m2 datatypes, with both single-process and MPI modes):
+Quick start (Runs **smoke test** -- all collectives, 1KB - 1GB with a step factor of 4, for float32, float16, bfloat16, and fp8_e5m2 datatypes, sweeping power-of-2 GPU counts, with both single-process and MPI modes):
 
 ```shell
 export LD_LIBRARY_PATH=/path/to/rccl-install/lib:$LD_LIBRARY_PATH

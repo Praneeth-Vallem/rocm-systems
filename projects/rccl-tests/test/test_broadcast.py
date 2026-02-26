@@ -8,12 +8,12 @@ from test_runner import run_rccl_perf, run_rccl_mpi
 EXECUTABLE = "broadcast_perf"
 
 
-def test_broadcast_single(gpu_info, byte_ranges, step_factor, datatypes, memory_types, request, subtests):
+def test_broadcast_single(gpu_counts, byte_ranges, step_factor, datatypes, memory_types, request, subtests):
     timeout = request.config.getoption("--test-timeout")
     for datatype, memory_type in itertools.product(datatypes, memory_types):
         for min_bytes, max_bytes in byte_ranges:
             # 1 thread per GPU (-t <ngpus> -g 1)
-            for ngpus in [str(2**x) for x in range(gpu_info["log_ngpus"] + 1)]:
+            for ngpus in gpu_counts:
                 with subtests.test(dtype=datatype, mem=memory_type,
                                    bytes=f"{min_bytes}-{max_bytes}", step=step_factor, ngpus=ngpus):
                     args = ["-t", ngpus, "-g", "1", "-b", min_bytes, "-e", max_bytes,
@@ -23,13 +23,13 @@ def test_broadcast_single(gpu_info, byte_ranges, step_factor, datatypes, memory_
 
 
 @pytest.mark.mpi
-def test_broadcast_mpi(gpu_info, byte_ranges, step_factor, datatypes, request, subtests):
+def test_broadcast_mpi(gpu_counts, byte_ranges, step_factor, datatypes, request, subtests):
     timeout = request.config.getoption("--test-timeout")
     hostfile = request.config.getoption("--hostfile") or None
     for datatype in datatypes:
         for min_bytes, max_bytes in byte_ranges:
-            # 1 GPU per MPI rank (-g 1); scale nprocs like log_ngpus
-            for nprocs in [str(2**x) for x in range(gpu_info["log_ngpus"] + 1)]:
+            # 1 GPU per MPI rank (-g 1); scale nprocs via gpu_counts
+            for nprocs in gpu_counts:
                 with subtests.test(dtype=datatype, nprocs=nprocs,
                                    bytes=f"{min_bytes}-{max_bytes}", step=step_factor):
                     args = ["-t", "1", "-g", "1", "-b", min_bytes, "-e", max_bytes,
