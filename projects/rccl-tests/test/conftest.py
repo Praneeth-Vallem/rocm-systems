@@ -18,10 +18,14 @@ def detect_gpu_count():
         return len(os.environ['HIP_VISIBLE_DEVICES'].split(","))
     try:
         out = subprocess.check_output(
-            ["bash", "-c", "rocminfo | grep 'Device Type:.*GPU' | wc -l"],
+            ["rocminfo"],
             text=True, timeout=30,
         )
-        return int(out.strip())
+        gpu_count = sum(
+            1 for line in out.splitlines()
+            if "Device Type" in line and "GPU" in line
+        )
+        return int(gpu_count)
     except (subprocess.SubprocessError, ValueError):
         pytest.exit("Failed to detect GPU count", returncode=1)
 
