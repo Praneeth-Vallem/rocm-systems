@@ -237,7 +237,7 @@ jobs:
         cmake -B build-rocdecode \
           -DCMAKE_INSTALL_PREFIX=${{ env.ROCM_PATH }}-$ROCM_VERSION \
           -DCMAKE_PREFIX_PATH=${{ env.ROCM_PATH }} \
-          -DCMAKE_CXX_COMPILER=${{ env.ROCM_PATH }}/lib/llvm/bin/amdclang++ \
+          -DCMAKE_CXX_COMPILER=${{ env.ROCM_PATH }}/bin/amdclang++ \
           -DCMAKE_C_COMPILER_LAUNCHER=ccache \
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
           ${GITHUB_WORKSPACE}/rocDecode
@@ -248,7 +248,7 @@ jobs:
         cmake -B build-rocjpeg \
           -DCMAKE_INSTALL_PREFIX=${{ env.ROCM_PATH }}-$ROCM_VERSION \
           -DCMAKE_PREFIX_PATH=${{ env.ROCM_PATH }} \
-          -DCMAKE_CXX_COMPILER=${{ env.ROCM_PATH }}/lib/llvm/bin/amdclang++ \
+          -DCMAKE_CXX_COMPILER=${{ env.ROCM_PATH }}/bin/amdclang++ \
           -DCMAKE_C_COMPILER_LAUNCHER=ccache \
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
           ${GITHUB_WORKSPACE}/rocJPEG
