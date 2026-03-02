@@ -237,8 +237,8 @@ class AMDSMIHelpers:
 
         try:
             cpu_handles = []
-            # amdsmi_get_cpusocket_handles() returns the cpu socket handles stored for cpu_id
-            cpu_handles = amdsmi_interface.amdsmi_get_cpusocket_handles()
+            # amdsmi_get_cpu_handles() returns the cpu socket handles stored for cpu_id
+            cpu_handles = amdsmi_interface.amdsmi_get_cpu_handles()
         except amdsmi_interface.AmdSmiLibraryException as e:
             if e.err_code in (
                 amdsmi_interface.amdsmi_wrapper.AMDSMI_STATUS_NOT_INIT,
@@ -703,7 +703,7 @@ class AMDSMIHelpers:
             (False, str): Return False, and the first input that failed to be converted
         """
         if "all" in cpu_selections:
-            return True, True, amdsmi_interface.amdsmi_get_cpusocket_handles()
+            return True, True, amdsmi_interface.amdsmi_get_cpu_handles()
 
         if isinstance(cpu_selections, str):
             cpu_selections = [cpu_selections]
@@ -1157,9 +1157,9 @@ class AMDSMIHelpers:
 
     def get_cpu_id_from_device_handle(self, input_device_handle):
         """Get the cpu index from the device_handle.
-        amdsmi_interface.amdsmi_get_cpusocket_handles() returns the list of device_handles in order of cpu_index
+        amdsmi_interface.amdsmi_get_cpu_handles() returns the list of device_handles in order of cpu_index
         """
-        device_handles = amdsmi_interface.amdsmi_get_cpusocket_handles()
+        device_handles = amdsmi_interface.amdsmi_get_cpu_handles()
         for cpu_index, device_handle in enumerate(device_handles):
             if input_device_handle.value == device_handle.value:
                 return cpu_index
@@ -1171,7 +1171,7 @@ class AMDSMIHelpers:
 
     def get_core_id_from_device_handle(self, input_device_handle):
         """Get the core index from the device_handle.
-        amdsmi_interface.amdsmi_get_cpusocket_handles() returns the list of device_handles in order of cpu_index
+        amdsmi_interface.amdsmi_get_cpu_handles() returns the list of device_handles in order of cpu_index
         """
         device_handles = amdsmi_interface.amdsmi_get_cpucore_handles()
         for core_index, device_handle in enumerate(device_handles):
