@@ -29,6 +29,8 @@
 #include "lib/common/synchronized.hpp"
 #include "lib/common/utility.hpp"
 #include "lib/rocprofiler-sdk/agent.hpp"
+#include "lib/rocprofiler-sdk/aql/helpers.hpp"
+#include "lib/rocprofiler-sdk/spm/interface.hpp"
 
 #include <rocprofiler-sdk/fwd.h>
 #include <rocprofiler-sdk/cxx/details/tokenize.hpp>
@@ -423,7 +425,7 @@ operator==(Metric const& lhs, Metric const& rhs)
     };
     return get_tie(lhs) == get_tie(rhs);
 }
-Metric::Metric(const std::string&,  // Get rid of this...
+Metric::Metric(std::string arch,
                std::string name,
                std::string block,
                std::string event,
@@ -431,7 +433,8 @@ Metric::Metric(const std::string&,  // Get rid of this...
                std::string expr,
                std::string constant,
                uint64_t    id)
-: name_(std::move(name))
+: arch_(std::move(arch))
+, name_(std::move(name))
 , block_(std::move(block))
 , event_(std::move(event))
 , description_(std::move(dsc))
@@ -453,5 +456,26 @@ Metric::Metric(const std::string&,  // Get rid of this...
         }
     }
 }
+
+bool
+isSupportSpm(const Metric& metric)
+{
+    auto agents = rocprofiler::agent::get_agents();
+
+    const auto itr = std::find_if(agents.begin(), agents.end(), [&](const auto* agent) {
+        return std::string_view(agent->name) == std::string_view(metric.arch());
+    });
+    if(itr == agents.end()) return false;
+    if(metric.event().empty()) return false;
+    auto sym = rocprofiler::spm::construct_spm_interface();
+    if(!sym.has_value()) return false;
+    auto aql_agent       = *CHECK_NOTNULL(rocprofiler::agent::get_aql_agent((*itr)->id));
+    auto query_info      = rocprofiler::aql::get_query_info((*itr)->id, metric);
+    auto pmc_event       = aqlprofile_pmc_event_t{};
+    pmc_event.block_name = static_cast<hsa_ven_amd_aqlprofile_block_name_t>(query_info.id);
+    pmc_event.event_id   = static_cast<uint32_t>(std::stoul(metric.event().c_str(), nullptr));
+    return sym->spm_is_event_supported(aql_agent, pmc_event);
+}
+
 }  // namespace counters
 }  // namespace rocprofiler
