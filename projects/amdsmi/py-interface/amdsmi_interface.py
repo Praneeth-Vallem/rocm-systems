@@ -6709,8 +6709,6 @@ def amdsmi_get_rocm_version() -> Tuple[bool, str]:
         return False, f"Unable to detect ROCm installation, Unknown Error: {e}"
 
 
-
-
 def amdsmi_get_esmi_err_msg(status: AmdSmiStatus) -> str:
     if not isinstance(status, AmdSmiStatus):
         raise AmdSmiParameterException(status, AmdSmiStatus)

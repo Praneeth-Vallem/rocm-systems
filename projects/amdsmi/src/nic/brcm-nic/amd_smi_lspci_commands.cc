@@ -34,8 +34,26 @@
 
 #include "amd_smi/impl/amd_smi_utils.h"
 
+static bool is_valid_bdf(const std::string& bdf) {
+  // Validate BDF format: DDDD:BB:DD.F or BB:DD.F
+  static const std::regex bdf_re("^([0-9a-fA-F]{4}:)?[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\\.[0-7]$");
+  return std::regex_match(bdf, bdf_re);
+}
+
+static bool is_safe_search_key(const std::string& key) {
+  // Reject characters that could escape the shell single-quote context
+  return key.find('\'') == std::string::npos && key.find('\\') == std::string::npos;
+}
+
 amdsmi_status_t get_lspci_device_data(std::string bdfStr, std::string search_key,
                                       std::string& version) {
+  if (!is_valid_bdf(bdfStr) || !is_safe_search_key(search_key)) {
+    std::ostringstream ss;
+    ss << __PRETTY_FUNCTION__ << " | Invalid BDF or search key: " << bdfStr << ", " << search_key;
+    LOG_ERROR(ss);
+    return AMDSMI_STATUS_INVAL;
+  }
+
   std::string lspci_data;
   std::string command = "lspci -s " + bdfStr + " -vv | grep -i '" + search_key + "'";
 
@@ -87,7 +105,7 @@ amdsmi_status_t get_lspci_root_switch(amdsmi_bdf_t devicehBdf, amdsmi_bdf_t* swi
   while (std::getline(lines, line)) {
     if (line.find("LSI PCIe Switch management endpoint") != std::string::npos) {
       // get Bus
-      bus_pos = line.rfind(']----');
+      bus_pos = line.rfind("]----");
       if (bus_pos == std::string::npos) {
         // Check if the Bus position is not found, then continue to the next line
         continue;
