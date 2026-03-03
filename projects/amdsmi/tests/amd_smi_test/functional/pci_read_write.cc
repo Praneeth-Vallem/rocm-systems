@@ -168,14 +168,16 @@ void TestPciReadWrite::Run(void) {
                                                             " ..." << std::endl;
     }
     ret =  amdsmi_set_gpu_pci_bandwidth(processor_handles_[dv_ind], freq_bitmask);
-    if (ret != amdsmi_status_t::AMDSMI_STATUS_NOT_SUPPORTED) {
-        CHK_ERR_ASRT(ret)
-    }
-    else {
+    if (ret == amdsmi_status_t::AMDSMI_STATUS_NOT_SUPPORTED) {
         auto status_string("");
         amdsmi_status_code_to_string(ret, &status_string);
         std::cout << "\t\t** amdsmi_set_gpu_pci_bandwidth(): " << status_string << "\n";
+        // Restore perf level to AUTO since the library may have set it to
+        // MANUAL before the bandwidth write failed.
+        amdsmi_set_gpu_perf_level(processor_handles_[dv_ind], AMDSMI_DEV_PERF_LEVEL_AUTO);
+        continue;
     }
+    CHK_ERR_ASRT(ret)
 
     ret = amdsmi_get_gpu_pci_bandwidth(processor_handles_[dv_ind], &bw);
     CHK_ERR_ASRT(ret)
