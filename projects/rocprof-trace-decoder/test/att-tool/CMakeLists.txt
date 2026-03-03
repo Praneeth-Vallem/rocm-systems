@@ -39,7 +39,6 @@ add_executable(tool)
 target_sources(tool PRIVATE ${ATT_TOOL_SOURCE_FILES})
 target_include_directories(tool PRIVATE ${INCLUDE_DIRS})
 target_link_libraries(tool PRIVATE rocprof-trace-decoder-static ${LINK_LIBS})
-target_compile_definitions(tool PRIVATE ROCPROF_TRACE_DECODER_HAS_COMGR)
 target_compile_options(tool PUBLIC -g -O3)
 
 # Sanitizer build: recompile library sources with sanitizer flags
@@ -47,7 +46,6 @@ add_executable(sanitized)
 target_sources(sanitized PRIVATE ${ATT_TOOL_SOURCE_FILES} ${ATT_DECODER_V3_FILES})
 target_include_directories(sanitized PRIVATE ${INCLUDE_DIRS})
 target_link_libraries(sanitized PRIVATE ${LINK_LIBS})
-target_compile_definitions(sanitized PRIVATE ROCPROF_TRACE_DECODER_HAS_COMGR)
 
 target_compile_options(sanitized PUBLIC -fsanitize=address,undefined -g)
 target_link_options(sanitized PUBLIC -fsanitize=address,undefined)

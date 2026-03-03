@@ -275,18 +275,21 @@ ToolData::get(pcinfo_t _pc)
         for(auto& [vaddr, symbol] : cfile->table->getSymbolMap(_pc.code_object_id))
             symbol_table.insert({symbol.vaddr, symbol.mem_size, _pc.code_object_id});
 
-        auto addr_range = symbol_table.find_codeobj_in_range(_pc.address);
+        rocprof_trace_decoder::codeobj::address_range_t addr_range;
+        if(!symbol_table.find_codeobj_in_range(_pc.address, addr_range))
+            throw std::out_of_range("No code object found for address");
+
         try
         {
-            auto symbol = cfile->table->getSymbolMap(_pc.code_object_id).at(addr_range.address);
+            auto symbol = cfile->table->getSymbolMap(_pc.code_object_id).at(addr_range.addr);
             auto pair   = KernelName{symbol.name, demangle(symbol.name)};
-            cfile->kernel_names.emplace(pcinfo_t{addr_range.address, _pc.code_object_id}, pair);
+            cfile->kernel_names.emplace(pcinfo_t{addr_range.addr, _pc.code_object_id}, pair);
         } catch(...)
         {
-            WARNING("Could not find kernel symbol for " << _pc.code_object_id << ':' << addr_range.address);
+            WARNING("Could not find kernel symbol for " << _pc.code_object_id << ':' << addr_range.addr);
         }
 
-        for(auto addr = addr_range.address; addr < addr_range.address + addr_range.size;)
+        for(auto addr = addr_range.addr; addr < addr_range.addr + addr_range.size;)
         {
             pcinfo_t info{.address = addr, .code_object_id = addr_range.id};
             auto& cline = *(isa_map.emplace(info, std::make_unique<CodeLine>()).first->second);

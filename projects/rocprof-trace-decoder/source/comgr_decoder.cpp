@@ -22,7 +22,7 @@
 
 #include "trace_decoder_api.h"
 
-#ifdef ROCPROF_TRACE_DECODER_HAS_COMGR
+#ifndef ROCPROF_TRACE_DECODER_COMGR_DISABLED
 
 #    include "cxx/code_printing.hpp"
 
@@ -231,7 +231,7 @@ PUBLIC_API rocprofiler_thread_trace_decoder_status_t rocprof_trace_decoder_decod
 
 } // extern "C"
 
-#else // !ROCPROF_TRACE_DECODER_HAS_COMGR — stub implementations
+#else // ROCPROF_TRACE_DECODER_COMGR_DISABLED — stub implementations
 
 #    define PUBLIC_API __attribute__((visibility("default")))
 
@@ -269,4 +269,4 @@ rocprof_trace_decoder_decode(rocprof_trace_decoder_handle_t, rocprof_trace_decod
 
 } // extern "C"
 
-#endif // ROCPROF_TRACE_DECODER_HAS_COMGR
+#endif // ROCPROF_TRACE_DECODER_COMGR_DISABLED
