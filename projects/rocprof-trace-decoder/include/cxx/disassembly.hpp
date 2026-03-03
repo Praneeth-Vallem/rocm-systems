@@ -63,7 +63,7 @@
         return AMD_COMGR_STATUS_ERROR;                                                             \
     }
 
-namespace rocprof
+namespace rocprof_trace_decoder
 {
 namespace codeobj
 {
@@ -299,4 +299,4 @@ public:
 };
 
 }  // namespace codeobj
-}  // namespace rocprof
+}  // namespace rocprof_trace_decoder

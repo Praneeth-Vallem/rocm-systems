@@ -54,8 +54,8 @@ namespace rocprofiler
 {
 namespace att_wrapper
 {
-using Instruction = rocprof::codeobj::Instruction;
-using SymbolInfo  = rocprof::codeobj::SymbolInfo;
+using Instruction = rocprof_trace_decoder::codeobj::Instruction;
+using SymbolInfo  = rocprof_trace_decoder::codeobj::SymbolInfo;
 
 struct ToolData
 {

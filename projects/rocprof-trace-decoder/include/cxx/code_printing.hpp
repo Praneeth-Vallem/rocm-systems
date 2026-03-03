@@ -38,7 +38,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace rocprof
+namespace rocprof_trace_decoder
 {
 namespace codeobj
 {
@@ -352,4 +352,4 @@ private:
 };
 
 }  // namespace codeobj
-}  // namespace rocprof
+}  // namespace rocprof_trace_decoder

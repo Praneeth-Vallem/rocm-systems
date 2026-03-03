@@ -75,12 +75,18 @@ endif()
 
 set(TTD_COMGR_LINK_LIBS)
 if(NOT DISABLE_COMGR)
-    find_library(COMGR_LIB NAMES amd_comgr HINTS /opt/rocm/lib)
+    find_library(
+        COMGR_LIB
+        NAMES amd_comgr
+        HINTS /opt/rocm/lib)
     if(COMGR_LIB)
         message(STATUS "Found amd_comgr: ${COMGR_LIB}")
         set(TTD_COMGR_LINK_LIBS ${COMGR_LIB})
         # Locate ROCm include directory for amd_comgr headers
-        find_path(ROCM_INCLUDE_DIR NAMES amd_comgr/amd_comgr.h HINTS /opt/rocm/include)
+        find_path(
+            ROCM_INCLUDE_DIR
+            NAMES amd_comgr/amd_comgr.h
+            HINTS /opt/rocm/include)
         if(NOT ROCM_INCLUDE_DIR)
             set(ROCM_INCLUDE_DIR "/opt/rocm/include")
         endif()

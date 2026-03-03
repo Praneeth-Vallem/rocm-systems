@@ -22,12 +22,12 @@
 
 #pragma once
 
-#include "cxx/segment.hpp"
 #include "cxx/common.hpp"
+#include "cxx/segment.hpp"
 
 // Pull the unified types into the global namespace for internal library use.
-using address_range_t        = rocprof::codeobj::address_range_t;
-using CodeobjTableTranslator = rocprof::codeobj::CodeobjTableTranslator;
+using address_range_t = rocprof_trace_decoder::codeobj::address_range_t;
+using CodeobjTableTranslator = rocprof_trace_decoder::codeobj::CodeobjTableTranslator;
 
 inline bool operator==(const pcinfo_t& a, const pcinfo_t& b)
 {

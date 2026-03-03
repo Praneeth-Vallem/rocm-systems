@@ -90,7 +90,7 @@ main(int argc, char** argv)
 
     auto codemap = std::make_shared<ATTDecoder::AddressTable>();
     {
-        using Decoder = rocprof::codeobj::LoadedCodeobjDecoder;
+        using Decoder = rocprof_trace_decoder::codeobj::LoadedCodeobjDecoder;
 
         auto launch_decoder = [&](std::shared_ptr<std::string> filename, uint64_t addr, uint64_t size) -> auto
         {

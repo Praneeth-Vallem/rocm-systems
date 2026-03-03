@@ -271,7 +271,7 @@ ToolData::get(pcinfo_t _pc)
 
     // Attempt to disassemble full kernel
     try {
-        rocprof::codeobj::CodeobjTableTranslator symbol_table;
+        rocprof_trace_decoder::codeobj::CodeobjTableTranslator symbol_table;
         for(auto& [vaddr, symbol] : cfile->table->getSymbolMap(_pc.code_object_id))
             symbol_table.insert({symbol.vaddr, symbol.mem_size, _pc.code_object_id});
 

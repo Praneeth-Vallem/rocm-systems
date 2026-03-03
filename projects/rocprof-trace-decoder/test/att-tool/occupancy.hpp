@@ -34,7 +34,7 @@ namespace att_wrapper
 {
 namespace OccupancyFile
 {
-using AddressTable = rocprof::codeobj::CodeobjAddressTranslate;
+using AddressTable = rocprof_trace_decoder::codeobj::CodeobjAddressTranslate;
 
 void
 OccupancyFile(const Fspath&                                     dir,
