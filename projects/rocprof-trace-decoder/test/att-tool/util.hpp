@@ -28,7 +28,7 @@
 #define TOOL_VERSION       "3.0.0"
 
 #include "trace_decoder_api.h"
-#include "sdk/code_printing.hpp"
+#include "cxx/code_printing.hpp"
 
 #include <memory>
 #include <string>
