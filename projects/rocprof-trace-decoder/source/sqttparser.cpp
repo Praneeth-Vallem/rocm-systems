@@ -173,6 +173,8 @@ PUBLIC_API const char* rocprof_trace_decoder_get_status_string(rocprofiler_threa
          "ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_INVALID_ARGUMENT"                                                    },
         {ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_INVALID_SHADER_DATA,
          "ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_INVALID_SHADER_DATA"                                                 },
+        {ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_NOT_IMPLEMENTED,
+         "ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_NOT_IMPLEMENTED"                                                    },
         {ROCPROFILER_THREAD_TRACE_DECODER_STATUS_LAST,                      "ROCPROFILER_THREAD_TRACE_DECODER_STATUS_LAST"   },
     };
 

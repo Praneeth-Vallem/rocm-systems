@@ -35,6 +35,7 @@ typedef enum
     ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_OUT_OF_RESOURCES,
     ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_INVALID_ARGUMENT,
     ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_INVALID_SHADER_DATA,
+    ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_NOT_IMPLEMENTED,
     ROCPROFILER_THREAD_TRACE_DECODER_STATUS_LAST
 } rocprofiler_thread_trace_decoder_status_t;
 
@@ -125,6 +126,76 @@ rocprof_trace_decoder_dump_data(const char*                                     
                                 uint64_t                                          data_size,
                                 rocprofiler_thread_trace_decoder_debug_callback_t cb,
                                 void*                                             userdata);
+
+/**
+ * @brief Opaque handle for a decoder instance with code object tracking.
+ * Requires amd_comgr. Built when DISABLE_COMGR is OFF.
+ */
+typedef struct
+{
+    uint64_t handle;
+} rocprof_trace_decoder_handle_t;
+
+/**
+ * @brief Creates a decoder handle that can load code objects and decode traces.
+ * @param[out] handle The handle to create.
+ * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_SUCCESS on success.
+ * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR if COMGR support is not available.
+ */
+rocprofiler_thread_trace_decoder_status_t
+rocprof_trace_decoder_create_handle(rocprof_trace_decoder_handle_t* handle);
+
+/**
+ * @brief Destroys a decoder handle and releases all loaded code objects.
+ * @param[in] handle The handle to destroy.
+ * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_SUCCESS on success.
+ */
+rocprofiler_thread_trace_decoder_status_t
+rocprof_trace_decoder_destroy_handle(rocprof_trace_decoder_handle_t handle);
+
+/**
+ * @brief Loads a code object for disassembly.
+ * @param[in] handle The decoder handle.
+ * @param[in] load_id Unique load identifier for the code object.
+ * @param[in] load_addr Load address (base virtual address) of the code object.
+ * @param[in] load_size Memory size of the loaded code object.
+ * @param[in] data Pointer to the code object ELF data.
+ * @param[in] data_size Size of the code object data in bytes.
+ * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_SUCCESS on success.
+ */
+rocprofiler_thread_trace_decoder_status_t
+rocprof_trace_decoder_codeobj_load(rocprof_trace_decoder_handle_t handle,
+                                   uint64_t                       load_id,
+                                   uint64_t                       load_addr,
+                                   uint64_t                       load_size,
+                                   const void*                    data,
+                                   uint64_t                       data_size);
+
+/**
+ * @brief Unloads a code object previously loaded with rocprof_trace_decoder_codeobj_load.
+ * @param[in] handle The decoder handle.
+ * @param[in] load_id The load identifier of the code object to unload.
+ * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_SUCCESS on success.
+ */
+rocprofiler_thread_trace_decoder_status_t
+rocprof_trace_decoder_codeobj_unload(rocprof_trace_decoder_handle_t handle,
+                                     uint64_t                       load_id);
+
+/**
+ * @brief Decodes thread trace data using loaded code objects for ISA resolution.
+ * This is equivalent to rocprof_trace_decoder_parse_data but does not require
+ * an ISA callback — instructions are resolved automatically from loaded code objects.
+ * @param[in] handle The decoder handle with loaded code objects.
+ * @param[in] se_data_callback Callback to return shader engine data from.
+ * @param[in] trace_callback Callback where the trace data is returned to.
+ * @param[in] userdata Userdata passed back to caller via callback.
+ * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_SUCCESS on success.
+ */
+rocprofiler_thread_trace_decoder_status_t
+rocprof_trace_decoder_decode(rocprof_trace_decoder_handle_t               handle,
+                             rocprof_trace_decoder_se_data_callback_t     se_data_callback,
+                             rocprof_trace_decoder_trace_callback_t       trace_callback,
+                             void*                                        userdata);
 
 #ifdef __cplusplus
 }

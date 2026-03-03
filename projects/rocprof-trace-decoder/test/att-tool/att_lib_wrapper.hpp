@@ -50,7 +50,7 @@ class ATTDecoder
 public:
     ATTDecoder();
 
-    using AddressTable = rocprofiler::sdk::codeobj::disassembly::CodeobjAddressTranslate;
+    using AddressTable = rocprof::codeobj::CodeobjAddressTranslate;
 
     /**
      * Parse a list of att files
@@ -70,7 +70,7 @@ public:
 
 class ATTFileMgr
 {
-    using AddressTable = rocprofiler::sdk::codeobj::disassembly::CodeobjAddressTranslate;
+    using AddressTable = rocprof::codeobj::CodeobjAddressTranslate;
 
 public:
     ATTFileMgr(Fspath _dir, std::vector<std::string> _counters, std::shared_ptr<AddressTable>& codeobj_files);
