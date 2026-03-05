@@ -35,7 +35,7 @@ python_lib_path = f"{current_path}/../../share/amd_smi"
 sys.path.insert(0, python_lib_path)
 # Only fallback to the python library if its a compatible version
 # multiple amdsmi versions installed on the system could cause issues
-# TODO Add version checking & debug to check pathing
+
 # Ideally we want to identify if the installed python library is incompatible and log a solution to the user
 #   LD library config or reinstall, etc...
 # The problem is coming from the switch over between the post install and pypi
@@ -48,11 +48,19 @@ def _log_version_and_path_diagnostics():
         pkg_version = getattr(_version, "__version__", "unknown")
     except Exception as exc:  # pragma: no cover - defensive
         pkg_version = f"unavailable ({exc})"
-    pkg_dir = Path(__file__).resolve().parent
-    lib_candidate = pkg_dir / "libamd_smi_python.so"
+
+    # Resolve paths from the *wrapper* module, not from this CLI file.
+    # The wrapper lives in the amdsmi package dir; the CLI lives elsewhere.
+    try:
+        import amdsmi.amdsmi_wrapper as _w
+        wrapper_path = Path(_w.__file__).resolve()
+        wrapper_dir = wrapper_path.parent
+    except Exception:
+        wrapper_dir = Path("<unknown>")
+
     print(f"[amdsmi-cli] Python package version: {pkg_version}")
-    print(f"[amdsmi-cli] Package dir: {pkg_dir}")
-    print(f"[amdsmi-cli] Expected Python lib: {lib_candidate} (exists={lib_candidate.exists()})")
+    print(f"[amdsmi-cli] CLI dir: {Path(__file__).resolve().parent}")
+    print(f"[amdsmi-cli] Wrapper dir: {wrapper_dir}")
     print(f"[amdsmi-cli] sys.path[0]: {sys.path[0]}")
 
 
@@ -60,8 +68,11 @@ def _check_version_compatibility(expected_version: Optional[str] = None) -> None
     """
     Verify that the Python package version matches the expected CLI/lib version (if provided).
     If mismatched, log guidance and abort to avoid loading an incompatible library.
+
+    The actual library loading (pip vs system context) is handled entirely by
+    amdsmi_wrapper._load_library().  This function only checks version strings
+    and that the wrapper can resolve *some* loadable library candidate.
     """
-    lib_locations = []
     try:
         from amdsmi import _version  # type: ignore
         pkg_version = getattr(_version, "__version__", None)
@@ -77,27 +88,27 @@ def _check_version_compatibility(expected_version: Optional[str] = None) -> None
         print("[amdsmi-cli] and ensure LD_LIBRARY_PATH/ldconfig points to the matching shared library.")
         sys.exit(1)
 
-    # If the Python lib is missing, warn early with guidance.
-    pkg_dir = Path(__file__).resolve().parent
-    lib_candidate = pkg_dir / "libamd_smi_python.so"
-    if lib_candidate.exists():
-        return
-    lib_locations.append(str(lib_candidate))
-
-    # Also consider the shared install path resolved via _find_lib.py
+    # Delegate the library-existence check to the wrapper's own detection logic.
+    # _build_candidate_paths() uses the wrapper's __file__ to correctly resolve
+    # pip (libamd_smi_python.so next to wrapper) vs system (/opt/rocm/lib/libamd_smi.so).
     try:
-        from amdsmi._find_lib import find_smi_library  # type: ignore
-        resolved = find_smi_library()
-        if resolved.exists():
-            return
-        lib_locations.append(str(resolved))
+        from amdsmi.amdsmi_wrapper import _build_candidate_paths
+        candidates = _build_candidate_paths()
+        for candidate in candidates:
+            if isinstance(candidate, str):
+                # bare "libamd_smi.so" — let the dynamic linker resolve it later
+                return
+            if candidate.exists():
+                return
     except Exception:
-        pass
+        # If the wrapper isn't importable at all, fall through to the
+        # ImportError handler in the try/except block below.
+        return
 
     _log_version_and_path_diagnostics()
-    print("[amdsmi-cli] Unable to locate libamd_smi_python.so in expected locations:")
-    for loc in lib_locations:
-        print(f"  - {loc}")
+    print("[amdsmi-cli] Unable to locate the AMD SMI shared library in expected locations:")
+    for c in candidates:
+        print(f"  - {c}")
     print("[amdsmi-cli] Install the amdsmi wheel that bundles the Python shared library,")
     print("[amdsmi-cli] or adjust LD_LIBRARY_PATH/ldconfig to point to a compatible lib.")
     sys.exit(1)
