@@ -157,6 +157,12 @@ do_install_amdsmi_python_lib() {
   local amdsmi_python_lib_path="$python_lib_path"
   local amdsmi_setup_py_path="$python_lib_path/setup.py"
 
+  # Remove stale SWIG-based Python extension; the package now uses ctypes
+  # and libamd_smi_python.so is no longer shipped. A leftover copy baked
+  # into the container image references symbols removed from libamd_smi.so
+  # and causes "undefined symbol" errors when importing the amdsmi package.
+  rm -f "${amdsmi_python_lib_path}/amdsmi/libamd_smi_python.so" 2>/dev/null || true
+
   # Decide installation method based on setuptools version
   if [[ "$(printf '%s\n' "$setuptools_version" "28.5" | sort -V | head -n1)" == "$setuptools_version" ]]; then
     echo "[WARNING] Setuptools version is less than 28.5. AMD-SMI will not be installed."

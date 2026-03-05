@@ -29,12 +29,84 @@ import os
 
 from pathlib import Path
 
+from typing import Optional
 current_path = os.path.dirname(os.path.abspath(__file__))
 python_lib_path = f"{current_path}/../../share/amd_smi"
 sys.path.insert(0, python_lib_path)
-# Prioritize the library from this installation over any pip-installed version
+# Only fallback to the python library if its a compatible version
+# multiple amdsmi versions installed on the system could cause issues
+# TODO Add version checking & debug to check pathing
+# Ideally we want to identify if the installed python library is incompatible and log a solution to the user
+#   LD library config or reinstall, etc...
+# The problem is coming from the switch over between the post install and pypi
+
+
+def _log_version_and_path_diagnostics():
+    """Emit best-effort diagnostics about the amdsmi Python package and the shared library location."""
+    try:
+        from amdsmi import _version  # type: ignore
+        pkg_version = getattr(_version, "__version__", "unknown")
+    except Exception as exc:  # pragma: no cover - defensive
+        pkg_version = f"unavailable ({exc})"
+    pkg_dir = Path(__file__).resolve().parent
+    lib_candidate = pkg_dir / "libamd_smi_python.so"
+    print(f"[amdsmi-cli] Python package version: {pkg_version}")
+    print(f"[amdsmi-cli] Package dir: {pkg_dir}")
+    print(f"[amdsmi-cli] Expected Python lib: {lib_candidate} (exists={lib_candidate.exists()})")
+    print(f"[amdsmi-cli] sys.path[0]: {sys.path[0]}")
+
+
+def _check_version_compatibility(expected_version: Optional[str] = None) -> None:
+    """
+    Verify that the Python package version matches the expected CLI/lib version (if provided).
+    If mismatched, log guidance and abort to avoid loading an incompatible library.
+    """
+    lib_locations = []
+    try:
+        from amdsmi import _version  # type: ignore
+        pkg_version = getattr(_version, "__version__", None)
+    except Exception:
+        _log_version_and_path_diagnostics()
+        print("[amdsmi-cli] Failed to read amdsmi Python package version; aborting to avoid incompatibility.")
+        sys.exit(1)
+
+    if expected_version and pkg_version and pkg_version != expected_version:
+        _log_version_and_path_diagnostics()
+        print(f"[amdsmi-cli] Version mismatch: expected {expected_version}, found {pkg_version}.")
+        print("[amdsmi-cli] Please install a matching amdsmi wheel from PyPI or reinstall the ROCm package,")
+        print("[amdsmi-cli] and ensure LD_LIBRARY_PATH/ldconfig points to the matching shared library.")
+        sys.exit(1)
+
+    # If the Python lib is missing, warn early with guidance.
+    pkg_dir = Path(__file__).resolve().parent
+    lib_candidate = pkg_dir / "libamd_smi_python.so"
+    if lib_candidate.exists():
+        return
+    lib_locations.append(str(lib_candidate))
+
+    # Also consider the shared install path resolved via _find_lib.py
+    try:
+        from amdsmi._find_lib import find_smi_library  # type: ignore
+        resolved = find_smi_library()
+        if resolved.exists():
+            return
+        lib_locations.append(str(resolved))
+    except Exception:
+        pass
+
+    _log_version_and_path_diagnostics()
+    print("[amdsmi-cli] Unable to locate libamd_smi_python.so in expected locations:")
+    for loc in lib_locations:
+        print(f"  - {loc}")
+    print("[amdsmi-cli] Install the amdsmi wheel that bundles the Python shared library,")
+    print("[amdsmi-cli] or adjust LD_LIBRARY_PATH/ldconfig to point to a compatible lib.")
+    sys.exit(1)
+
 
 try:
+    # TODO Add version checking & debug to check pathing
+    # The expected version string can be wired in from packaging if desired.
+    _check_version_compatibility(expected_version=None)
     from amdsmi import amdsmi_interface, amdsmi_exception
 except ImportError as e:
     print(f"Unhandled import error: {e}")
