@@ -25,6 +25,7 @@
 #include "lib/common/uuid_v7.hpp"
 #include "metadata.hpp"
 #include "output_stream.hpp"
+#include "statistics.hpp"
 #include "stream_info.hpp"
 #include "timestamps.hpp"
 
@@ -106,6 +107,10 @@ using function_args_t = std::vector<argument_info>;
 struct rocpd_db;
 void
 finish_pending_insert_batch(rocpd_db& db);
+std::string
+normalize_batch_table_name(const rocpd_db& db, std::string_view table);
+void
+log_batch_flush_stats(const rocpd_db& db);
 
 struct sql_insert_value
 {
@@ -127,6 +132,8 @@ struct rocpd_db
     using statement_cache_t = std::unordered_map<std::string, sqlite3_stmt*>;
     using schema_map_t      = std::unordered_map<rocpd_sql_schema_kind_t, std::string>;
     using track_map_t       = std::unordered_map<track_data, uint64_t>;
+    using batch_stats_t     = statistics<uint64_t, double>;
+    using batch_stats_map_t = std::unordered_map<std::string, batch_stats_t>;
 
     rocpd_db() = default;
     ~rocpd_db();
@@ -143,6 +150,7 @@ struct rocpd_db
     size_t               event_id_counter = 0;
     statement_cache_t    statements       = {};
     pending_insert_batch pending_batch    = {};
+    batch_stats_map_t    batch_stats      = {};
 
     size_t get_event_id() { return ++event_id_counter; }
 };
@@ -357,6 +365,7 @@ insert_value(std::string_view _name, const std::optional<Tp>& _value, TraitT = {
 rocpd_db::~rocpd_db()
 {
     finish_pending_insert_batch(*this);
+    log_batch_flush_stats(*this);
 
     for(auto& [key, stmt] : statements)
     {
@@ -426,6 +435,56 @@ reset_and_clear_statement(sqlite3_stmt* stmt)
     SQLITE3_CHECK(sqlite3_clear_bindings(stmt));
 }
 
+std::string
+normalize_batch_table_name(const rocpd_db& db, std::string_view table)
+{
+    if(db.uuid.empty()) return std::string{table};
+
+    auto suffix = fmt::format("_{}", db.uuid);
+    if(table.size() > suffix.size() &&
+       table.substr(table.size() - suffix.size(), suffix.size()) == suffix)
+    {
+        return std::string{table.substr(0, table.size() - suffix.size())};
+    }
+
+    return std::string{table};
+}
+
+void
+log_batch_flush_stats(const rocpd_db& db)
+{
+    if(db.batch_stats.empty()) return;
+
+    auto tables = std::vector<std::string>{};
+    tables.reserve(db.batch_stats.size());
+    for(const auto& [table, stats] : db.batch_stats)
+    {
+        if(stats.get_count() <= 0) continue;
+        tables.emplace_back(table);
+    }
+
+    if(tables.empty()) return;
+
+    std::sort(tables.begin(), tables.end());
+
+    ROCP_WARNING << "ROCPD batch flush statistics by table:";
+    for(const auto& table : tables)
+    {
+        const auto& stats = db.batch_stats.at(table);
+        ROCP_WARNING << fmt::format(
+            "  {}: flushes={}, min={}, max={}, mean={:.2f}, stddev={:.2f}, variance={:.2f}, "
+            "rows_total={}",
+            table,
+            stats.get_count(),
+            stats.get_min(),
+            stats.get_max(),
+            stats.get_mean(),
+            stats.get_stddev(),
+            stats.get_variance(),
+            stats.get_sum());
+    }
+}
+
 sqlite3_stmt*&
 get_or_prepare_batch_statement(rocpd_db&                   db,
                                const pending_insert_batch& pending,
@@ -490,6 +549,9 @@ flush_pending_insert_batch(rocpd_db& db)
             << ", sqlite3_errmsg: " << sqlite3_errmsg(db.conn) << ", table: " << pending.table
             << ", batch_size: " << batch_size
             << ", fields: " << fmt::format("{}", fmt::join(pending.fields, ", "));
+
+        auto normalized_table = normalize_batch_table_name(db, pending.table);
+        db.batch_stats[normalized_table] += static_cast<uint64_t>(end_idx - begin_idx);
     }
 
     pending.rows.clear();
