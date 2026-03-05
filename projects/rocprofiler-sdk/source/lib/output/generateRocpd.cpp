@@ -132,11 +132,11 @@ struct pending_insert_batch
 
 struct rocpd_db
 {
-    using statement_cache_t = std::unordered_map<std::string, sqlite3_stmt*>;
-    using schema_map_t      = std::unordered_map<rocpd_sql_schema_kind_t, std::string>;
-    using track_map_t       = std::unordered_map<track_data, uint64_t>;
-    using batch_stats_t     = statistics<uint64_t, double>;
-    using batch_stats_map_t = std::unordered_map<std::string, batch_stats_t>;
+    using statement_cache_t   = std::unordered_map<std::string, sqlite3_stmt*>;
+    using schema_map_t        = std::unordered_map<rocpd_sql_schema_kind_t, std::string>;
+    using track_map_t         = std::unordered_map<track_data, uint64_t>;
+    using batch_stats_t       = statistics<uint64_t, double>;
+    using batch_stats_map_t   = std::unordered_map<std::string, batch_stats_t>;
     using pending_batch_map_t = std::unordered_map<std::string, pending_insert_batch>;
 
     static constexpr size_t max_pending_batches = 2;
@@ -148,16 +148,16 @@ struct rocpd_db
     rocpd_db(rocpd_db&&)                 = delete;
     rocpd_db& operator=(rocpd_db&&) = delete;
 
-    sqlite3*           conn                = nullptr;
-    std::string        uuid                = {};
-    std::string        guid                = {};
-    schema_map_t       schemas             = {};
-    track_map_t        tracks              = {};
-    size_t             event_id_counter    = 0;
-    statement_cache_t  statements          = {};
-    pending_batch_map_t pending_batches    = {};
-    uint64_t           pending_touch_count = 0;
-    batch_stats_map_t  batch_stats         = {};
+    sqlite3*            conn                = nullptr;
+    std::string         uuid                = {};
+    std::string         guid                = {};
+    schema_map_t        schemas             = {};
+    track_map_t         tracks              = {};
+    size_t              event_id_counter    = 0;
+    statement_cache_t   statements          = {};
+    pending_batch_map_t pending_batches     = {};
+    uint64_t            pending_touch_count = 0;
+    batch_stats_map_t   batch_stats         = {};
 
     size_t get_event_id() { return ++event_id_counter; }
 };
@@ -544,7 +544,7 @@ flush_pending_insert_batch(rocpd_db& db, pending_insert_batch& pending)
     // Execute in multi-row chunks up to max_rows; this keeps partial flushes batched too.
     for(size_t begin_idx = 0; begin_idx < batch_size;)
     {
-        const size_t remaining    = batch_size - begin_idx;
+        const size_t remaining     = batch_size - begin_idx;
         const size_t rows_per_exec = std::min(remaining, pending.max_rows);
         auto&        stmt          = get_or_prepare_batch_statement(db, pending, rows_per_exec);
         auto         end_idx       = begin_idx + rows_per_exec;
@@ -616,7 +616,7 @@ get_insert_statement(rocpd_db& db, std::string_view _table, std::vector<sql_inse
         if(pending.fields != fields)
         {
             flush_pending_insert_batch(db, pending);
-            pending.fields = std::move(fields);
+            pending.fields   = std::move(fields);
             pending.max_rows = get_max_batch_rows(db.conn, pending.fields.size());
             pending.rows.clear();
             pending.rows.reserve(pending.max_rows);
@@ -636,12 +636,11 @@ get_insert_statement(rocpd_db& db, std::string_view _table, std::vector<sql_inse
 
     if(db.pending_batches.size() >= rocpd_db::max_pending_batches)
     {
-        auto victim = std::min_element(
-            db.pending_batches.begin(),
-            db.pending_batches.end(),
-            [](const auto& lhs, const auto& rhs) {
-                return lhs.second.last_touched < rhs.second.last_touched;
-            });
+        auto victim = std::min_element(db.pending_batches.begin(),
+                                       db.pending_batches.end(),
+                                       [](const auto& lhs, const auto& rhs) {
+                                           return lhs.second.last_touched < rhs.second.last_touched;
+                                       });
 
         if(victim != db.pending_batches.end())
         {
@@ -650,7 +649,7 @@ get_insert_statement(rocpd_db& db, std::string_view _table, std::vector<sql_inse
         }
     }
 
-    auto pending = pending_insert_batch{};
+    auto pending         = pending_insert_batch{};
     pending.table        = table;
     pending.fields       = std::move(fields);
     pending.max_rows     = get_max_batch_rows(db.conn, pending.fields.size());
