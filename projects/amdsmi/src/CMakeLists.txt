@@ -156,7 +156,11 @@ if(BUILD_PYTHON_LIB)
         rt
         Threads::Threads
         ${CMAKE_DL_LIBS}
+        amdsminic
         ${FILESYSTEM_LIB}
+    )
+    target_link_directories(${AMD_SMI}_python PRIVATE
+        ${CMAKE_CURRENT_BINARY_DIR}/nic/ai-nic/amdsmi_unified/build/
     )
     target_include_directories(${AMD_SMI}_python PRIVATE 
         ${CMAKE_CURRENT_SOURCE_DIR} 
