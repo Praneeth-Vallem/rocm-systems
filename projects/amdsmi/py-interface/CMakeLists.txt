@@ -131,3 +131,33 @@ install(
     DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/${PY_PACKAGE_DIR}
     DESTINATION ${PY_WRAPPER_INSTALL_DIR}
     COMPONENT dev)
+
+# Install a .pth file into the system site-packages directory so that
+# "import amdsmi" works without pip install. The .pth mechanism is Python-
+# version agnostic: Python reads *.pth files from site-packages on startup
+# and adds the listed paths to sys.path.
+install(CODE "
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE} -c \"import site; print(site.getsitepackages()[0])\"
+        OUTPUT_VARIABLE _site_packages
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _site_rc
+    )
+    if(NOT _site_rc EQUAL 0 OR _site_packages STREQUAL \"\")
+        # Fallback to sysconfig
+        execute_process(
+            COMMAND ${Python3_EXECUTABLE} -c \"import sysconfig; print(sysconfig.get_path('purelib'))\"
+            OUTPUT_VARIABLE _site_packages
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _site_rc
+        )
+    endif()
+    if(_site_rc EQUAL 0 AND NOT _site_packages STREQUAL \"\")
+        set(_pth_file \"\${_site_packages}/amdsmi.pth\")
+        file(WRITE \"\${_pth_file}\"
+             \"\${CMAKE_INSTALL_PREFIX}/${PY_WRAPPER_INSTALL_DIR}\\n\")
+        message(STATUS \"Installed \${_pth_file} -> \${CMAKE_INSTALL_PREFIX}/${PY_WRAPPER_INSTALL_DIR}\")
+    else()
+        message(WARNING \"Could not determine Python site-packages; amdsmi.pth not installed.\")
+    endif()
+" COMPONENT dev)

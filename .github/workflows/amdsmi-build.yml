@@ -165,23 +165,23 @@ jobs:
               echo "Installation successful on attempt $i"
               ln -s /opt/rocm/bin/amd-smi /usr/local/bin
 
-              # Install the wheel
-              echo 'Installing wheel package...'
-              PYTHON_CMD=python3
-              $PYTHON_CMD -m pip install --force-reinstall ${{ env.PROJECT_DIR }}/build/py-interface/python_package/*.whl
-
               # Verify Installation
               echo 'Verifying installation:'
               if ! amd-smi version; then echo "amd-smi version failed with $?" ; exit 1; fi
-              if ! python3 -m pip list | grep amd; then echo "pip list | grep amd failed with $?" ; exit 1; fi
+
+              # Verify .pth file created by postinst (pip list will NOT show
+              # amdsmi — the .pth approach adds to sys.path without registering
+              # pip metadata, which is by design).
+              python3 -c "import site, pathlib; pth = pathlib.Path(site.getsitepackages()[0]) / 'amdsmi.pth'; assert pth.exists(), f'amdsmi.pth not found at {pth}'; print(f'✓ .pth file found: {pth}'); print(f'  contents: {pth.read_text().strip()}')"
+
               if ! python3 -m pip list | grep pip; then echo "pip list | grep pip failed with $?" ; exit 1; fi
               if ! python3 -m pip list | grep setuptools; then echo "pip list | grep setuptools failed with $?" ; exit 1; fi
               echo 'Completed installation on ${{ matrix.os }}'
 
-              # Verify wheel installation
-              echo 'Verifying wheel installation...'
-              cd /tmp && $PYTHON_CMD -c "import amdsmi; print('✓ Import successful'); amdsmi.amdsmi_init(); print('✓ Library loaded'); amdsmi.amdsmi_shut_down(); print('✓ Wheel working!')"
-              echo 'Python wheel build and install completed on ${{ matrix.os }}'
+              # Verify Python package import
+              echo 'Verifying Python package...'
+              cd /tmp && python3 -c "import amdsmi; print('✓ Import successful'); amdsmi.amdsmi_init(); print('✓ Library loaded'); amdsmi.amdsmi_shut_down(); print('✓ Package working!')"
+              echo 'Python package verification completed on ${{ matrix.os }}'
               break
             else
               echo "Installation failed on attempt $i"
@@ -419,6 +419,29 @@ jobs:
             echo "Unit tests passed"
           fi
 
+
+          # echo "Running CLI unit tests..."
+          # if ! ./cli_unit_test.py -v > /tmp/test-results-${{ matrix.os }}/cli_unit_test_output.txt 2>&1; then
+          #   echo "CLI Unit tests failed!"
+          #   echo "=============== CLI UNIT TEST OUTPUT ==============="
+          #   tail -100 /tmp/test-results-${{ matrix.os }}/cli_unit_test_output.txt
+          #   echo "===================================================="
+          #   exit 1
+          # else
+          #   echo "CLI Unit tests passed"
+          # fi
+
+          echo "Running perf tests..."
+          if ! ./perf_tests.py -v > /tmp/test-results-${{ matrix.os }}/perf_test_output.txt 2>&1; then
+            echo "Perf tests failed!"
+            echo "=============== PERF TEST OUTPUT ==============="
+            tail -100 /tmp/test-results-${{ matrix.os }}/perf_test_output.txt
+            echo "================================================="
+            exit 1
+          else
+            echo "Perf tests passed"
+          fi
+
           echo "Python tests done"
 
           # Example Tests
@@ -449,6 +472,18 @@ jobs:
         run: |
           echo "Displaying Unit Test Results for ${{ matrix.os }}"
           cat /tmp/test-results-${{ matrix.os }}/unit_test_output.txt || echo "No unit test results found for ${{ matrix.os }}"
+
+      - name: CLI Unit Test Results
+        if: always()
+        run: |
+          echo "Displaying CLI Unit Test Results for ${{ matrix.os }}"
+          cat /tmp/test-results-${{ matrix.os }}/cli_unit_test_output.txt || echo "No CLI unit test results found for ${{ matrix.os }}"
+
+      - name: Perf Test Results
+        if: always()
+        run: |
+          echo "Displaying Perf Test Results for ${{ matrix.os }}"
+          cat /tmp/test-results-${{ matrix.os }}/perf_test_output.txt || echo "No perf test results found for ${{ matrix.os }}"
 
       - name: Example DRM Test Results
         if: always()
@@ -661,23 +696,20 @@ jobs:
               echo "Installation successful on attempt $i"
               ln -s /opt/rocm/bin/amd-smi /usr/local/bin
 
-
-              # Install the wheel
-              echo 'Installing wheel package...'
-              PYTHON_CMD=python3
-              $PYTHON_CMD -m pip install --force-reinstall ${{ env.PROJECT_DIR }}/build/py-interface/python_package/*.whl
-
               echo 'Verifying installation:'
               if ! amd-smi version; then echo "amd-smi version failed with $?" ; exit 1; fi
-              if ! python3 -m pip list | grep amd; then echo "pip list | grep amd failed with $?" ; exit 1; fi
+
+              # Verify .pth file created by postinst
+              python3 -c "import site, pathlib; pth = pathlib.Path(site.getsitepackages()[0]) / 'amdsmi.pth'; assert pth.exists(), f'amdsmi.pth not found at {pth}'; print(f'✓ .pth file found: {pth}'); print(f'  contents: {pth.read_text().strip()}')"
+
               if ! python3 -m pip list | grep pip; then echo "pip list | grep pip failed with $?" ; exit 1; fi
               if ! python3 -m pip list | grep setuptools; then echo "pip list | grep setuptools failed with $?" ; exit 1; fi
               echo 'Completed installation on RHEL10'
 
-              # Verify wheel installation
-              echo 'Verifying wheel installation...'
-              cd /tmp && $PYTHON_CMD -c "import amdsmi; print('✓ Import successful'); amdsmi.amdsmi_init(); print('✓ Library loaded'); amdsmi.amdsmi_shut_down(); print('✓ Wheel working!')"
-              echo 'Python wheel build and install completed on ${{ matrix.os }}'
+              # Verify Python package import
+              echo 'Verifying Python package...'
+              cd /tmp && python3 -c "import amdsmi; print('✓ Import successful'); amdsmi.amdsmi_init(); print('✓ Library loaded'); amdsmi.amdsmi_shut_down(); print('✓ Package working!')"
+              echo 'Python package verification completed on ${{ matrix.os }}'
               break
             else
               echo "Installation failed on attempt $i"
@@ -724,23 +756,21 @@ jobs:
           esac
           ln -s /opt/rocm/bin/amd-smi /usr/local/bin
 
-          # Install the wheel
-          echo 'Installing wheel package...'
-          PYTHON_CMD=python3
-          $PYTHON_CMD -m pip install --force-reinstall ${{ env.PROJECT_DIR }}/build/py-interface/python_package/*.whl
-
           # Verify Installation
           echo 'Verifying installation:'
           if ! amd-smi version; then echo "amd-smi version failed with $?" ; exit 1; fi
-          if ! python3 -m pip list | grep amd; then echo "pip list | grep amd failed with $?" ; exit 1; fi
+
+          # Verify .pth file created by postinst
+          python3 -c "import site, pathlib; pth = pathlib.Path(site.getsitepackages()[0]) / 'amdsmi.pth'; assert pth.exists(), f'amdsmi.pth not found at {pth}'; print(f'✓ .pth file found: {pth}'); print(f'  contents: {pth.read_text().strip()}')"
+
           if ! python3 -m pip list | grep pip; then echo "pip list | grep pip failed with $?" ; exit 1; fi
           if ! python3 -m pip list | grep setuptools; then echo "pip list | grep setuptools failed with $?" ; exit 1; fi
           echo 'Completed installation on ${{ matrix.os }}'
 
-          # Verify wheel installation
-          echo 'Verifying wheel installation...'
-          cd /tmp && $PYTHON_CMD -c "import amdsmi; print('✓ Import successful'); amdsmi.amdsmi_init(); print('✓ Library loaded'); amdsmi.amdsmi_shut_down(); print('✓ Wheel working!')"
-          echo 'Python wheel build and install completed on ${{ matrix.os }}'
+          # Verify Python package import
+          echo 'Verifying Python package...'
+          cd /tmp && python3 -c "import amdsmi; print('✓ Import successful'); amdsmi.amdsmi_init(); print('✓ Library loaded'); amdsmi.amdsmi_shut_down(); print('✓ Package working!')"
+          echo 'Python package verification completed on ${{ matrix.os }}'
 
       - name: Uninstall
         if: always()
@@ -880,14 +910,9 @@ jobs:
               ln -s /opt/rocm/bin/amd-smi /usr/local/bin
               echo 'Install done for test on RHEL10/AlmaLinux8'
 
-              # Install the wheel
-              echo 'Installing wheel package for tests...'
-              PYTHON_CMD=python3
-              $PYTHON_CMD -m pip install --force-reinstall ${{ env.PROJECT_DIR }}/build/py-interface/python_package/*.whl
-
               # Verify wheel installation
               echo 'Verifying wheel installation (tests)...'
-              cd /tmp && $PYTHON_CMD -c "import amdsmi; print('✓ Import successful'); amdsmi.amdsmi_init(); print('✓ Library loaded'); amdsmi.amdsmi_shut_down(); print('✓ Wheel working!')"
+              cd /tmp && python3 -c "import amdsmi; print('✓ Import successful'); amdsmi.amdsmi_init(); print('✓ Library loaded'); amdsmi.amdsmi_shut_down(); print('✓ Wheel working!')"
               echo 'Python wheel build and install completed for tests on ${{ matrix.os }}'
               break
             else
@@ -945,14 +970,9 @@ jobs:
           ln -s /opt/rocm/bin/amd-smi /usr/local/bin
           echo 'Install done for test on ${{ matrix.os }}'
 
-          # Install the wheel
-          echo 'Installing wheel package for tests...'
-          PYTHON_CMD=python3
-          $PYTHON_CMD -m pip install --force-reinstall ${{ env.PROJECT_DIR }}/build/py-interface/python_package/*.whl
-
           # Verify wheel installation
           echo 'Verifying wheel installation (tests)...'
-          cd /tmp && $PYTHON_CMD -c "import amdsmi; print('✓ Import successful'); amdsmi.amdsmi_init(); print('✓ Library loaded'); amdsmi.amdsmi_shut_down(); print('✓ Wheel working!')"
+          cd /tmp && python3 -c "import amdsmi; print('✓ Import successful'); amdsmi.amdsmi_init(); print('✓ Library loaded'); amdsmi.amdsmi_shut_down(); print('✓ Wheel working!')"
           echo 'Python wheel build and install completed for tests on ${{ matrix.os }}'
 
       - name: AMDSMI Command Tests
@@ -1059,6 +1079,29 @@ jobs:
             echo "Unit tests passed"
           fi
 
+
+          # echo "Running CLI unit tests..."
+          # if ! ./cli_unit_test.py -v > /tmp/test-results-${{ matrix.os }}/cli_unit_test_output.txt 2>&1; then
+          #   echo "CLI Unit tests failed!"
+          #   echo "=============== CLI UNIT TEST OUTPUT ==============="
+          #   tail -100 /tmp/test-results-${{ matrix.os }}/cli_unit_test_output.txt
+          #   echo "===================================================="
+          #   exit 1
+          # else
+          #   echo "CLI Unit tests passed"
+          # fi
+
+          echo "Running perf tests..."
+          if ! ./perf_tests.py -v > /tmp/test-results-${{ matrix.os }}/perf_test_output.txt 2>&1; then
+            echo "Perf tests failed!"
+            echo "=============== PERF TEST OUTPUT ==============="
+            tail -100 /tmp/test-results-${{ matrix.os }}/perf_test_output.txt
+            echo "================================================="
+            exit 1
+          else
+            echo "Perf tests passed"
+          fi
+
           echo "Python tests done"
 
           # Example Tests
@@ -1089,6 +1132,18 @@ jobs:
         run: |
           echo "Displaying Unit Test Results for ${{ matrix.os }}"
           cat /tmp/test-results-${{ matrix.os }}/unit_test_output.txt || echo "No unit test results found for ${{ matrix.os }}"
+
+      - name: CLI Unit Test Results
+        if: always()
+        run: |
+          echo "Displaying CLI Unit Test Results for ${{ matrix.os }}"
+          cat /tmp/test-results-${{ matrix.os }}/cli_unit_test_output.txt || echo "No CLI unit test results found for ${{ matrix.os }}"
+
+      - name: Perf Test Results
+        if: always()
+        run: |
+          echo "Displaying Perf Test Results for ${{ matrix.os }}"
+          cat /tmp/test-results-${{ matrix.os }}/perf_test_output.txt || echo "No perf test results found for ${{ matrix.os }}"
 
       - name: Example DRM Test Results
         if: always()
