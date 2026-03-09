@@ -27,7 +27,7 @@
 #define TOOL_VERSION_REV   0
 #define TOOL_VERSION       "3.0.0"
 
-#include "trace_decoder_api.h"
+#include "rocprof_trace_decoder.h"
 #include "cxx/code_printing.hpp"
 
 #include <memory>

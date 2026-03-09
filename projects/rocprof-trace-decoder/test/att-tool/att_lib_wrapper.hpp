@@ -23,6 +23,7 @@
 #pragma once
 
 #include "util.hpp"
+#include "rocprof_trace_decoder.h"
 
 #include <algorithm>
 #include <fstream>
@@ -64,6 +65,7 @@ public:
                const Fspath&                       output_dir,
                const std::vector<std::string>&     att_files,
                std::shared_ptr<AddressTable>&      codeobj_files,
+               rocprof_trace_decoder_handle_t       decoder,
                const std::vector<std::string>&     counters_names,
                const std::string&                  output_formats);
 };
@@ -73,7 +75,7 @@ class ATTFileMgr
     using AddressTable = rocprof_trace_decoder::codeobj::CodeobjAddressTranslate;
 
 public:
-    ATTFileMgr(Fspath _dir, std::vector<std::string> _counters, std::shared_ptr<AddressTable>& codeobj_files);
+    ATTFileMgr(Fspath _dir, std::vector<std::string> _counters, std::shared_ptr<AddressTable>& codeobj_files, rocprof_trace_decoder_handle_t decoder);
     ~ATTFileMgr();
 
     void parseShader(int se_id, const std::vector<char>& data);
@@ -83,6 +85,7 @@ public:
     std::shared_ptr<class CodeFile>    codefile{nullptr};
     std::shared_ptr<class FilenameMgr> filenames{nullptr};
     std::shared_ptr<AddressTable>      table{nullptr};
+    rocprof_trace_decoder_handle_t       decoder{};
 
     std::map<size_t, std::vector<occupancy_t>> occupancy;
 };

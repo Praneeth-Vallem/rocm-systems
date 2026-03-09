@@ -65,7 +65,7 @@ file(
 
 # Public headers to install
 set(TTD_PUBLIC_HEADERS
-    ${TTD_PROJECT_SOURCE_DIR}/include/trace_decoder_api.h ${TTD_PROJECT_SOURCE_DIR}/include/trace_decoder_types.h
+    ${TTD_PROJECT_SOURCE_DIR}/include/rocprof_trace_decoder.h ${TTD_PROJECT_SOURCE_DIR}/include/trace_decoder_types.h
     ${TTD_PROJECT_SOURCE_DIR}/include/trace_decoder_instrument.h)
 
 # --- COMGR support (optional) ---

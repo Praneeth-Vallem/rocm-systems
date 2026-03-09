@@ -38,6 +38,7 @@
 #include "code.hpp"
 #include "wave.hpp"
 #include "util.hpp"
+#include "rocprof_trace_decoder.h"
 
 #define C_API_BEGIN                                                                                \
     try                                                                                            \
@@ -59,7 +60,7 @@ using SymbolInfo  = rocprof_trace_decoder::codeobj::SymbolInfo;
 
 struct ToolData
 {
-    ToolData(const std::vector<char>& data, WaveConfig& config);
+    ToolData(const std::vector<char>& data, WaveConfig& config, rocprof_trace_decoder_handle_t decoder);
     ~ToolData();
 
     CodeLine& get(pcinfo_t pc);
