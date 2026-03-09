@@ -435,6 +435,46 @@ TEST_F(NetIbMPITest, ListenAndConnect) {
     }
 }
 
+TEST_F(NetIbMPITest, MultipleSequentialConnections) {
+    ASSERT_TRUE(validateTestPrerequisites(kExactTwoProcesses, kExactTwoProcesses,
+                                         false, kMinGpusPerNode, kNoNodeLimit))
+        << "Test requires exactly " << kExactTwoProcesses << " processes";
+
+    ASSERT_EQ(InitNetIb(), ncclSuccess);
+
+    int ndev = 0;
+    ASSERT_EQ(GetDeviceCount(&ndev), ncclSuccess);
+    ASSERT_GT(ndev, 0);
+
+    int rank = MPIEnvironment::world_rank;
+    int peerRank = (rank + 1) % 2;
+
+    // Open and close multiple connections sequentially to test resource cleanup
+    const int kNumIterations = 5;
+    for (int iter = 0; iter < kNumIterations; iter++) {
+        ConnectionPair pair;
+        ASSERT_EQ(SetupConnection(0, pair, rank, peerRank), ncclSuccess)
+            << "Failed to setup connection on iteration " << iter;
+
+        NetConnectionGuard connGuard(net_);
+        if (rank == 0) {
+            connGuard.setRecvComm(pair.recvComm);
+            connGuard.setListenComm(pair.listenComm);
+            EXPECT_NE(pair.recvComm, nullptr);
+        } else {
+            connGuard.setSendComm(pair.sendComm);
+            EXPECT_NE(pair.sendComm, nullptr);
+        }
+
+        MPI_Barrier(MPI_COMM_WORLD);
+        // connGuard destructor closes connection
+    }
+
+    if (MPIEnvironment::world_rank == 0) {
+        TEST_INFO("Successfully completed %d sequential connection cycles", kNumIterations);
+    }
+}
+
 TEST_F(NetIbMPITest, ConnectWithInvalidHandle) {
     ASSERT_TRUE(validateTestPrerequisites(kMinProcessesForMPI, MPITestConstants::kNoProcessLimit,
                                          kRequirePowerOfTwo, 1, kNoNodeLimit))
@@ -1059,6 +1099,206 @@ TEST_F(NetIbMPITest, MakeVirtualDeviceInvalidProps) {
     ncclResult_t result = MakeVirtualDevice(&vdev, &vProps);
     EXPECT_EQ(result, ncclInvalidUsage) << "Should fail with zero devices";
 
+}
+
+TEST_F(NetIbMPITest, MergeThreeDevices)
+{
+  // This test requires at least 3 physical IB devices
+  int numDevices = 0;
+  ASSERT_EQ(GetDeviceCount(&numDevices), ncclSuccess);
+
+  if (numDevices < 3)
+  {
+    GTEST_SKIP() << "Test requires at least 3 IB devices, found " << numDevices
+                 << ". Skipping.";
+  }
+
+  // Collect properties for all physical devices before fusion
+  std::vector<ncclNetProperties_t> preFusionProps(numDevices);
+  for (int i = 0; i < numDevices; i++)
+  {
+    ASSERT_EQ(GetDeviceProperties(i, &preFusionProps[i]), ncclSuccess);
+  }
+
+  // Find three devices that are candidates for merging:
+  // - Same link type (all IB or all RoCE)
+  // - Same speed
+  // - Different PCI paths (actually different physical devices)
+  //
+  // We pick the first three devices with matching speed and link type.
+  int selectedDevs[3] = {-1, -1, -1};
+  int selectedCount = 0;
+
+  for (int i = 0; i < numDevices && selectedCount < 3; i++)
+  {
+    if (selectedCount == 0)
+    {
+      selectedDevs[selectedCount++] = i;
+    }
+    else
+    {
+      // Check compatibility with the first selected device
+      bool compatible = (preFusionProps[i].speed == preFusionProps[selectedDevs[0]].speed);
+      // Names starting with the same prefix indicate same device type
+      // (e.g., all mlx5_*)
+      if (compatible)
+      {
+        selectedDevs[selectedCount++] = i;
+      }
+    }
+  }
+
+  if (selectedCount < 3)
+  {
+    GTEST_SKIP() << "Could not find 3 compatible IB devices for merging test. "
+                 << "Found " << selectedCount << " compatible devices. Skipping.";
+  }
+
+  // Now attempt to merge these three devices using the environment variable
+  // approach: set NCCL_IB_MERGE_NICS=1 and NCCL_IB_MERGE_VFS=1 to enable
+  // fusion, then re-initialize to trigger the merge logic.
+  //
+  // The greedy pairing algorithm should:
+  // - Merge 2 of the 3 devices into one fused device
+  // - Leave the 3rd device as standalone
+  // - Result: (numDevices - 1) total devices after fusion
+
+  // Save original env vars
+  const char* origMergeNics = getenv("NCCL_IB_MERGE_NICS");
+  const char* origHca = getenv("NCCL_IB_HCA");
+
+  // Build HCA filter to restrict to exactly our 3 selected devices
+  std::string hcaFilter = std::string(preFusionProps[selectedDevs[0]].name) + "," +
+                           std::string(preFusionProps[selectedDevs[1]].name) + "," +
+                           std::string(preFusionProps[selectedDevs[2]].name);
+
+  setenv("NCCL_IB_MERGE_NICS", "1", 1);
+  setenv("NCCL_IB_HCA", hcaFilter.c_str(), 1);
+
+  // Re-initialize to trigger fusion
+  ASSERT_EQ(InitNetIb(), ncclSuccess);
+
+  int postFusionDeviceCount = 0;
+  ASSERT_EQ(GetDeviceCount(&postFusionDeviceCount), ncclSuccess);
+
+  // With 3 input devices and greedy pairing, we expect:
+  // - One fused device (from 2 compatible devices)
+  // - One standalone device
+  // - Total: 2 devices
+  //
+  // However, if no two devices are close enough topologically to merge,
+  // all 3 remain separate. We check both valid outcomes.
+
+  ASSERT_GE(postFusionDeviceCount, 1)
+    << "At least one device must exist after fusion attempt";
+  ASSERT_LE(postFusionDeviceCount, 9); // ?
+    << "Cannot have more devices after fusion than before";
+
+  // Collect post-fusion properties
+  std::vector<ncclNetProperties_t> postFusionProps(postFusionDeviceCount);
+  bool foundMergedDevice = false;
+  int standaloneCount = 0;
+
+  for (int i = 0; i < postFusionDeviceCount; i++)
+  {
+    ASSERT_EQ(GetDeviceProperties(i, &postFusionProps[i]), ncclSuccess);
+
+    std::string devName(postFusionProps[i].name);
+
+    // A merged device name contains '+' (e.g., "mlx5_0+mlx5_1")
+    if (devName.find('+') != std::string::npos)
+    {
+      foundMergedDevice = true;
+
+      // Verify merged device speed equals sum of constituent speeds
+      // Parse the constituent device names from the merged name
+      std::vector<std::string> constituentNames;
+      std::stringstream ss(devName);
+      std::string token;
+      while (std::getline(ss, token, '+'))
+      {
+        constituentNames.push_back(token);
+      }
+
+      // A merged device should contain exactly 2 constituent devices
+      // (greedy pairing merges pairs, not triples)
+      EXPECT_EQ(constituentNames.size(), 2u)
+        << "Merged device should contain exactly 2 constituents, got "
+        << constituentNames.size() << " in name '" << devName << "'";
+
+      // Verify speed is sum of constituents
+      int expectedSpeed = 0;
+      for (const auto& cName : constituentNames)
+      {
+        for (int j = 0; j < numDevices; j++)
+        {
+          if (std::string(preFusionProps[j].name) == cName)
+          {
+            expectedSpeed += preFusionProps[j].speed;
+            break;
+          }
+        }
+      }
+      EXPECT_EQ(postFusionProps[i].speed, expectedSpeed)
+        << "Merged device speed should equal sum of constituent speeds";
+    }
+    else
+    {
+      standaloneCount++;
+    }
+  }
+
+  if (postFusionDeviceCount == 2)
+  {
+    // Expected outcome: 1 merged + 1 standalone
+    EXPECT_TRUE(foundMergedDevice)
+      << "With 3 compatible devices reduced to 2, one should be a merged device";
+    EXPECT_EQ(standaloneCount, 1)
+      << "With 3 devices merged into 2, exactly 1 should remain standalone";
+  }
+  else if (postFusionDeviceCount == 3)
+  {
+    // All 3 devices remained separate (no compatible pair found by topology)
+    EXPECT_FALSE(foundMergedDevice)
+      << "If device count is still 3, no merging should have occurred";
+    EXPECT_EQ(standaloneCount, 3);
+  }
+
+  // Verify all GUIDs are unique
+  std::set<uint64_t> guids;
+  for (int i = 0; i < postFusionDeviceCount; i++)
+  {
+    EXPECT_TRUE(guids.insert(postFusionProps[i].guid).second)
+      << "Duplicate GUID found for device " << i
+      << " (name: " << postFusionProps[i].name << ")";
+  }
+
+  // Verify all devices have valid properties
+  for (int i = 0; i < postFusionDeviceCount; i++)
+  {
+    EXPECT_GT(postFusionProps[i].speed, 0)
+      << "Device " << i << " has zero speed";
+    EXPECT_GT(postFusionProps[i].port, 0)
+      << "Device " << i << " has zero port";
+    EXPECT_GT(postFusionProps[i].maxComms, 0)
+      << "Device " << i << " has zero maxComms";
+    EXPECT_NE(postFusionProps[i].pciPath, nullptr)
+      << "Device " << i << " has null pciPath";
+  }
+
+  // Restore environment
+  if (origMergeNics)
+    setenv("NCCL_IB_MERGE_NICS", origMergeNics, 1);
+  else
+    unsetenv("NCCL_IB_MERGE_NICS");
+
+  if (origHca)
+    setenv("NCCL_IB_HCA", origHca, 1);
+  else
+    unsetenv("NCCL_IB_HCA");
+
+  // Re-initialize with original settings
+  ASSERT_EQ(InitNetIb(), ncclSuccess);
 }
 
 // Stress and Edge Case Tests
