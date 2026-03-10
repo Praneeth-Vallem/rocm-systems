@@ -50,11 +50,13 @@ print_usage(const char* prog_name)
 void
 setup_tool_library_env()
 {
-    const auto* env_name = "ROCPROF_ATTACH_TOOL_LIBRARY";
+    const auto* attach_tool_library_env_name = "ROCPROF_ATTACH_TOOL_LIBRARY";
+    const auto* rocp_tool_libraries_env_name = "ROCP_TOOL_LIBRARIES";
 
-    const auto* existing = std::getenv(env_name);
+    const auto* existing = std::getenv(attach_tool_library_env_name);
     if(existing != nullptr)
     {
+        setenv(rocp_tool_libraries_env_name, existing, 0);
         std::cout << "[rocprof-sys-attach] Using tool library: " << existing << std::endl;
         return;
     }
@@ -63,8 +65,8 @@ setup_tool_library_env()
         rocprofsys::common::path::get_internal_libpath("librocprof-sys-dl.so");
     if(!path.empty())
     {
-        setenv(env_name, path.c_str(), 0);
-        setenv("ROCP_TOOL_LIBRARIES", path.c_str(), 0);
+        setenv(attach_tool_library_env_name, path.c_str(), 0);
+        setenv(rocp_tool_libraries_env_name, path.c_str(), 0);
         std::cout << "[rocprof-sys-attach] Using tool library: " << path << std::endl;
     }
 }

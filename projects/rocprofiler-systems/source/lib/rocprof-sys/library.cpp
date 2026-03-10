@@ -127,11 +127,6 @@ namespace
 auto _timemory_manager  = tim::manager::instance();
 auto _timemory_settings = tim::settings::shared_instance();
 
-// Local aliases for the guards (for code compatibility)
-auto& init_library_done = rocprofsys_init_library_done;
-auto& init_tooling_done = rocprofsys_init_tooling_done;
-auto& finalization_done = rocprofsys_finalization_done;
-
 void
 set_metadata_process_start_timestamp(int64_t _ts)
 {
@@ -471,7 +466,7 @@ rocprofsys_init_library_hidden()
     }
 
     if(get_state() != State::PreInit || get_state() == State::Init) return;
-    if(init_library_done.exchange(true)) return;
+    if(rocprofsys_init_library_done.exchange(true)) return;
 
     ROCPROFSYS_SCOPED_THREAD_STATE(ThreadState::Internal);
 
@@ -540,9 +535,9 @@ rocprofsys_init_tooling_hidden(void)
     }
 
     if(get_state() != State::PreInit || get_state() == State::Init ||
-       init_tooling_done.load() == getpid())
+       rocprofsys_init_tooling_done.load() == getpid())
         return false;
-    init_tooling_done.store(getpid());
+    rocprofsys_init_tooling_done.store(getpid());
 
     ROCPROFSYS_SCOPED_THREAD_STATE(ThreadState::Internal);
 
@@ -806,7 +801,7 @@ extern "C" void
 rocprofsys_finalize_hidden(void)
 {
     // Prevent multiple finalization calls (e.g., from atexit handlers after reset_state)
-    if(finalization_done.exchange(true))
+    if(rocprofsys_finalization_done.exchange(true))
     {
         LOG_DEBUG("Finalization already completed. Skipping.");
         return;
@@ -1145,8 +1140,8 @@ rocprofsys_finalize_hidden(void)
 
     common::destroy_static_objects();
 
-    // Note: init_library_done, init_tooling_done, and state are NOT reset here.
-    // They are only reset during re-attach (in rocprofiler-sdk.cpp) when
+    // Note: rocprofsys_init_library_done, rocprofsys_init_tooling_done, and state are NOT
+    // reset here. They are only reset during re-attach (in rocprofiler-sdk.cpp) when
     // explicitly preparing for a new session. Resetting them during normal exit
     // can cause crashes if cleanup code triggers reinitialization.
 }
@@ -1154,7 +1149,7 @@ rocprofsys_finalize_hidden(void)
 extern "C" void
 rocprofsys_set_finalization_done_hidden(void)
 {
-    finalization_done.store(true);
+    rocprofsys_finalization_done.store(true);
 }
 
 //======================================================================================//
