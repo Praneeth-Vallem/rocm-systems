@@ -142,13 +142,15 @@ void TestFrequenciesRead::Run(void) {
       freq_output(AMDSMI_CLK_TYPE_DCEF, "Display Controller Engine Clock");
       freq_output(AMDSMI_CLK_TYPE_SOC, "SOC Clock");
 
+      err = amdsmi_get_gpu_pci_bandwidth(processor_handles_[i], nullptr);
+      if (err != AMDSMI_STATUS_NOT_SUPPORTED) {
+        ASSERT_EQ(err, AMDSMI_STATUS_INVAL);
+      }
+      // Verify api support checking functionality is working
       err = amdsmi_get_gpu_pci_bandwidth(processor_handles_[i], &b);
       if (err == AMDSMI_STATUS_NOT_SUPPORTED) {
         std::cout << "\t**Get PCIE Bandwidth: Not supported on this machine"
                                                               << std::endl;
-        // Verify api support checking functionality is working
-        err = amdsmi_get_gpu_pci_bandwidth(processor_handles_[i], nullptr);
-        ASSERT_EQ(err, AMDSMI_STATUS_INVAL);
       } else if (err == AMDSMI_STATUS_NOT_YET_IMPLEMENTED) {
           std::cout << "\t**Get PCIE Bandwidth "
                     << ": Not implemented on this machine" << std::endl;
