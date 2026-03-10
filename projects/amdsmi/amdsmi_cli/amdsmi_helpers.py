@@ -1005,25 +1005,9 @@ class AMDSMIHelpers():
         """Check if fan control is supported on the first device.
 
         Returns:
-            str: "23-255 or 0-100%%" for RX7900XTX, "0-255 or 0-100%%" for legacy GPUs, "N/A" otherwise
+            str: "0-255 or 0-100%%" if fan control is supported, "N/A" otherwise
         """
         device_handles = amdsmi_interface.amdsmi_get_processor_handles()
-
-        # First pass: Check if any device is RX7900XTX (device_id 0x744C)
-        for dev in device_handles:
-            try:
-                asic_info = amdsmi_interface.amdsmi_get_gpu_asic_info(dev)
-                device_id = asic_info.get('device_id')
-                # Handle device_id being string or int
-                if isinstance(device_id, str):
-                    device_id = int(device_id, 16) if device_id.startswith('0x') else int(device_id)
-                if device_id == 0x744C or device_id == 0x747E:  # RX7900XTX or RX7700XT
-                    return "23-100 or 23-100%%"
-            except Exception as e:
-                logging.debug(f"AMDSMIHelpers.get_fan_support - Unable to get asic info for device {dev}: {str(e)}")
-                continue
-
-        # Second pass: Check for legacy GPU fan support using fan speed API
         for dev in device_handles:
             try:
                 # Try to get both fan speed and max fan speed
@@ -1036,11 +1020,13 @@ class AMDSMIHelpers():
                 logging.debug(f"AMDSMIHelpers.get_fan_support - Unable to get fan info for device {dev}: {str(e)}")
                 if e.err_code == amdsmi_interface.amdsmi_wrapper.AMDSMI_STATUS_NOT_SUPPORTED:
                     logging.debug(f"AMDSMIHelpers.get_fan_support - Device {dev} does not support fan control")
-                    continue
-                continue
+                    return "N/A"
+                return "N/A"
             except Exception as e:
                 logging.debug(f"AMDSMIHelpers.get_fan_support - Unexpected error occurred --> Unable to get fan info for device {dev}: {str(e)}")
-                continue
+                return "N/A"
+            # Only check the first device (socket device, never partition)
+            break
         return "N/A"
 
 

@@ -3678,53 +3678,16 @@ rsmi_status_t
 rsmi_dev_fan_reset(uint32_t dv_ind, uint32_t sensor_ind) {
   TRY
   rsmi_status_t ret;
-  uint16_t device_id;
   std::ostringstream ss;
   ss << __PRETTY_FUNCTION__ << "| ======= start =======";
   LOG_TRACE(ss);
 
+  ++sensor_ind;  // fan sysfs files have 1-based indices
   REQUIRE_ROOT_ACCESS
   DEVICE_MUTEX
-
-  // Check device ID to determine fan reset method
-  const uint16_t RX7900_DEVICE_ID = 0x744C;
-  const uint16_t RX7700_DEVICE_ID = 0x747E;
-  ret = rsmi_dev_id_get(dv_ind, &device_id);
-
-  if (ret == RSMI_STATUS_SUCCESS && (device_id == RX7900_DEVICE_ID || device_id == RX7700_DEVICE_ID)) {
-    // RX 7900 XTX / RX 7700 XT specific fan reset using gpu_od interface
-    // Write 'r' to reset to automatic control
-
-    // Get device path for gpu_od interface
-    GET_DEV_FROM_INDX
-    std::string fan_ctrl_path = dev->path() + "/device/gpu_od/fan_ctrl/fan_minimum_pwm";
-
-    ss << __PRETTY_FUNCTION__
-       << " | RX7900XTX/RX7700XT fan reset path: " << fan_ctrl_path;
-    LOG_DEBUG(ss);
-
-    // Write 'r' to reset fan control to automatic
-    int write_ret = amd::smi::WriteSysfsStr(fan_ctrl_path, "r");
-    if (write_ret != 0) {
-      ss << __PRETTY_FUNCTION__
-         << " | Failed to reset fan control"
-         << " | Error: " << write_ret << " (" << strerror(write_ret) << ")";
-      LOG_ERROR(ss);
-      return RSMI_STATUS_FILE_ERROR;
-    }
-
-    ss << __PRETTY_FUNCTION__
-       << " | Successfully reset RX7900XTX/RX7700XT fan control to automatic";
-    LOG_INFO(ss);
-    return RSMI_STATUS_SUCCESS;
-
-  } else {
-    // Legacy fan reset for other GPUs using hwmon interface
-    ++sensor_ind;  // fan sysfs files have 1-based indices
-    ret = set_dev_mon_value<uint64_t>(amd::smi::kMonFanCntrlEnable,
-                                                         dv_ind, sensor_ind, 2);
-    return ret;
-  }
+  ret = set_dev_mon_value<uint64_t>(amd::smi::kMonFanCntrlEnable,
+                                                       dv_ind, sensor_ind, 2);
+  return ret;
 
   CATCH
 }
@@ -3735,7 +3698,6 @@ rsmi_dev_fan_speed_set(uint32_t dv_ind, uint32_t sensor_ind, uint64_t speed) {
 
   rsmi_status_t ret;
   uint64_t max_speed;
-  uint16_t device_id;
   std::ostringstream ss;
   ss << __PRETTY_FUNCTION__ << "| ======= start =======";
   LOG_TRACE(ss);
@@ -3743,81 +3705,28 @@ rsmi_dev_fan_speed_set(uint32_t dv_ind, uint32_t sensor_ind, uint64_t speed) {
   REQUIRE_ROOT_ACCESS
   DEVICE_MUTEX
 
-  // Check device ID to determine fan control method
-  const uint16_t RX7900_DEVICE_ID = 0x744C;
-  const uint16_t RX7700_DEVICE_ID = 0x747E;
-  ret = rsmi_dev_id_get(dv_ind, &device_id);
+  ret = rsmi_dev_fan_speed_max_get(dv_ind, sensor_ind, &max_speed);
 
-  if (ret == RSMI_STATUS_SUCCESS && (device_id == RX7900_DEVICE_ID || device_id == RX7700_DEVICE_ID)) {
-    // RX 7900 XTX specific fan control using gpu_od interface
-    // Valid range is 23-100
-
-    if (speed < 23 || speed > 100) {
-      ss << __PRETTY_FUNCTION__
-         << " | RX7900XTX fan speed out of range (23-100): " << speed;
-      LOG_ERROR(ss);
-      return RSMI_STATUS_INPUT_OUT_OF_BOUNDS;
-    }
-
-    // Get device path for gpu_od interface
-    GET_DEV_FROM_INDX
-    std::string fan_ctrl_path = dev->path() + "/device/gpu_od/fan_ctrl/fan_minimum_pwm";
-
-    ss << __PRETTY_FUNCTION__
-       << " | RX7900XTX fan control path: " << fan_ctrl_path
-       << " | Setting speed: " << speed;
-    LOG_DEBUG(ss);
-
-    // Step 1: Write the fan speed value
-    std::string speed_str = std::to_string(speed);
-    int write_ret = amd::smi::WriteSysfsStr(fan_ctrl_path, speed_str);
-    if (write_ret != 0) {
-      ss << __PRETTY_FUNCTION__
-         << " | Failed to write fan speed value: " << speed_str
-         << " | Error: " << write_ret << " (" << strerror(write_ret) << ")";
-      LOG_ERROR(ss);
-      return RSMI_STATUS_FILE_ERROR;
-    }
-
-    // Step 2: Commit the change by writing 'c'
-    write_ret = amd::smi::WriteSysfsStr(fan_ctrl_path, "c");
-    if (write_ret != 0) {
-      ss << __PRETTY_FUNCTION__
-         << " | Failed to commit fan speed with 'c'"
-         << " | Error: " << write_ret << " (" << strerror(write_ret) << ")";
-      LOG_ERROR(ss);
-      return RSMI_STATUS_FILE_ERROR;
-    }
-
-    ss << __PRETTY_FUNCTION__
-       << " | Successfully set RX7900XTX fan speed to " << speed << "%";
-    LOG_INFO(ss);
-    return RSMI_STATUS_SUCCESS;
-
-  } else {
-    ret = rsmi_dev_fan_speed_max_get(dv_ind, sensor_ind, &max_speed);
-
-    if (ret != RSMI_STATUS_SUCCESS) {
-      return ret;
-    }
-
-    if (speed > max_speed) {
-      return RSMI_STATUS_INPUT_OUT_OF_BOUNDS;
-    }
-
-    ++sensor_ind;  // fan sysfs files have 1-based indices
-
-    // First need to set fan mode (pwm1_enable) to 1 (aka, "manual")
-    ret = set_dev_mon_value<uint64_t>(amd::smi::kMonFanCntrlEnable, dv_ind,
-                                                                 sensor_ind, 1);
-    if (ret != RSMI_STATUS_SUCCESS) {
-      return ret;
-    }
-
-    ret = set_dev_mon_value<uint64_t>(amd::smi::kMonFanSpeed, dv_ind,
-                                                             sensor_ind, speed);
+  if (ret != RSMI_STATUS_SUCCESS) {
     return ret;
   }
+
+  if (speed > max_speed) {
+    return RSMI_STATUS_INPUT_OUT_OF_BOUNDS;
+  }
+
+  ++sensor_ind;  // fan sysfs files have 1-based indices
+
+  // First need to set fan mode (pwm1_enable) to 1 (aka, "manual")
+  ret = set_dev_mon_value<uint64_t>(amd::smi::kMonFanCntrlEnable, dv_ind,
+                                                               sensor_ind, 1);
+  if (ret != RSMI_STATUS_SUCCESS) {
+    return ret;
+  }
+
+  ret = set_dev_mon_value<uint64_t>(amd::smi::kMonFanSpeed, dv_ind,
+                                                           sensor_ind, speed);
+  return ret;
 
   CATCH
 }

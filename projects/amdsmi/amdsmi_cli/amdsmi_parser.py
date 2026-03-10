@@ -651,19 +651,17 @@ class AMDSMIParser(argparse.ArgumentParser):
                     if '%' in values:
                         try:
                             amdsmi_helpers.confirm_out_of_spec_warning()
-                            # Store percentage value with flag: (percentage_value, is_percentage=True)
-                            percentage_value = int(values[:-1])
-                            if 0 <= percentage_value <= 100:
-                                setattr(args, self.dest, (percentage_value, True))
-                            else:
-                                raise argparse.ArgumentError(self, f"Invalid argument: '{values}' needs to be 0-100%")
+                            # Convert percentage to fan speed level
+                            values = (int(values[:-1]) / 100) * 255
+                            values = AMDSMIParser._custom_ceil(values) # Round up (Ceiling)
+                            setattr(args, self.dest, values)
                         except ValueError as e:
                             raise argparse.ArgumentError(self, f"Invalid argument: '{values}' needs to be 0-100%")
-                    else: # Store the direct value with flag: (value, is_percentage=False)
+                    else: # Store the fan level as fan_speed
                         values = int(values)
                         if 0 <= values <= 255:
                             amdsmi_helpers.confirm_out_of_spec_warning()
-                            setattr(args, self.dest, (values, False))
+                            setattr(args, self.dest, values)
                         else:
                             raise argparse.ArgumentError(self, f"Invalid argument: '{values}' needs to be 0-255")
                 else:
