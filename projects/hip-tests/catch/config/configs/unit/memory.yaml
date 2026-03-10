@@ -931,6 +931,16 @@ memory:
   Unit_hipMemPrefetchAsync_Sync_Behavior: *level_2
   Unit_hipMemPrefetchAsync_Rounding_Behavior: *level_2
   Unit_hipMemPrefetchAsync_Negative_Parameters: *level_2
+  Unit_hipMemPrefetchBatchAsync_SingleOperationSingleLocation: *level_2
+  Unit_hipMemPrefetchBatchAsync_LocationDistribution: *level_2
+  Unit_hipMemPrefetchBatchAsync_RoundTripDataIntegrity: *level_2
+  Unit_hipMemPrefetchBatchAsync_Negative_NullAndInvalidPointers: *level_2
+  Unit_hipMemPrefetchBatchAsync_Negative_IndexArrayConstraints: *level_2
+  Unit_hipMemPrefetchBatchAsync_Negative_ParameterValidation: *level_2
+  Unit_hipMemPrefetchBatchAsync_Negative_DeviceCapabilities: *level_2
+  Unit_hipMemPrefetchBatchAsync_MultiDevice:
+    <<: *level_2
+    tags: [multigpu]
   Unit_hipMemGetInfo_FreeLessThanTotal: *level_2
   Unit_hipFreeImplicitSyncDev:
     <<: *level_2
