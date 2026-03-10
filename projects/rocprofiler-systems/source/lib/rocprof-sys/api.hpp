@@ -27,7 +27,15 @@
 
 #include <timemory/compat/macros.h>
 
+#include <atomic>
 #include <cstddef>
+#include <sys/types.h>
+
+// Initialization and finalization guards - resettable to support re-attachment.
+// Used by rocprofiler-sdk re-attach support.
+extern std::atomic<bool>  rocprofsys_init_library_done;
+extern std::atomic<pid_t> rocprofsys_init_tooling_done;
+extern std::atomic<bool>  rocprofsys_finalization_done;
 
 // forward decl of the API
 extern "C"
@@ -98,7 +106,7 @@ extern "C"
     bool rocprofsys_init_tooling_hidden(void) ROCPROFSYS_HIDDEN_API;
     void rocprofsys_init_hidden(const char*, bool, const char*) ROCPROFSYS_HIDDEN_API;
     void rocprofsys_finalize_hidden(void) ROCPROFSYS_HIDDEN_API;
-    void rocprofsys_reset_for_reattach_hidden(void) ROCPROFSYS_HIDDEN_API;
+    void rocprofsys_set_finalization_done_hidden(void) ROCPROFSYS_HIDDEN_API;
     void rocprofsys_reset_preload_hidden(void) ROCPROFSYS_HIDDEN_API;
     void rocprofsys_set_env_hidden(const char*, const char*) ROCPROFSYS_HIDDEN_API;
     void rocprofsys_set_mpi_hidden(bool, bool) ROCPROFSYS_HIDDEN_API;

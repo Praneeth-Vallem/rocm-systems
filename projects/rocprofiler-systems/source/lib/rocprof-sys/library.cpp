@@ -116,18 +116,21 @@ setup() ROCPROFSYS_INTERNAL_API;
 }
 }  // namespace rocprofsys
 
+// Initialization and finalization guards - resettable to support re-attachment.
+// These are extern-accessible for rocprofiler-sdk re-attach support.
+std::atomic<bool>  rocprofsys_init_library_done{ false };
+std::atomic<pid_t> rocprofsys_init_tooling_done{ 0 };
+std::atomic<bool>  rocprofsys_finalization_done{ false };
+
 namespace
 {
 auto _timemory_manager  = tim::manager::instance();
 auto _timemory_settings = tim::settings::shared_instance();
 
-// Initialization guards - resettable to support re-attachment
-bool  init_library_done = false;
-pid_t init_tooling_done = 0;
-
-// Finalization guard - prevents multiple finalization calls within the same session.
-// This is reset by reset_finalization_guard() when re-attach is requested.
-bool finalization_done = false;
+// Local aliases for the guards (for code compatibility)
+auto& init_library_done = rocprofsys_init_library_done;
+auto& init_tooling_done = rocprofsys_init_tooling_done;
+auto& finalization_done = rocprofsys_finalization_done;
 
 void
 set_metadata_process_start_timestamp(int64_t _ts)
@@ -467,9 +470,8 @@ rocprofsys_init_library_hidden()
             fmt::format("State is not PreInit :: {}", std::to_string(get_state())));
     }
 
-    if(get_state() != State::PreInit || get_state() == State::Init || init_library_done)
-        return;
-    init_library_done = true;
+    if(get_state() != State::PreInit || get_state() == State::Init) return;
+    if(init_library_done.exchange(true)) return;
 
     ROCPROFSYS_SCOPED_THREAD_STATE(ThreadState::Internal);
 
@@ -538,9 +540,9 @@ rocprofsys_init_tooling_hidden(void)
     }
 
     if(get_state() != State::PreInit || get_state() == State::Init ||
-       init_tooling_done == getpid())
+       init_tooling_done.load() == getpid())
         return false;
-    init_tooling_done = getpid();
+    init_tooling_done.store(getpid());
 
     ROCPROFSYS_SCOPED_THREAD_STATE(ThreadState::Internal);
 
@@ -804,7 +806,7 @@ extern "C" void
 rocprofsys_finalize_hidden(void)
 {
     // Prevent multiple finalization calls (e.g., from atexit handlers after reset_state)
-    if(finalization_done)
+    if(finalization_done.exchange(true))
     {
         LOG_DEBUG("Finalization already completed. Skipping.");
         return;
@@ -824,9 +826,6 @@ rocprofsys_finalize_hidden(void)
         LOG_DEBUG("State = {}. Finalization skipped", std::to_string(get_state()));
         return;
     }
-
-    // Mark finalization as in progress to prevent re-entry
-    finalization_done = true;
 
     set_metadata_process_end_timestamp(comp::wall_clock::record());
 
@@ -1147,22 +1146,15 @@ rocprofsys_finalize_hidden(void)
     common::destroy_static_objects();
 
     // Note: init_library_done, init_tooling_done, and state are NOT reset here.
-    // They are only reset by rocprofsys_reset_for_reattach_hidden() when
-    // explicitly preparing for re-attach. Resetting them during normal exit
+    // They are only reset during re-attach (in rocprofiler-sdk.cpp) when
+    // explicitly preparing for a new session. Resetting them during normal exit
     // can cause crashes if cleanup code triggers reinitialization.
 }
 
-//======================================================================================//
-
 extern "C" void
-rocprofsys_reset_for_reattach_hidden(void)
+rocprofsys_set_finalization_done_hidden(void)
 {
-    // Reset all guards to allow reinitialization on re-attach
-    finalization_done = false;
-    init_library_done = false;
-    init_tooling_done = 0;
-    reset_state();
-    LOG_DEBUG("Reset all guards for re-attach");
+    finalization_done.store(true);
 }
 
 //======================================================================================//

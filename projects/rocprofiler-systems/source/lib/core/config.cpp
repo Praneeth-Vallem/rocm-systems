@@ -2768,8 +2768,10 @@ get_tmp_file(std::string _basename, std::string _ext)
     _cfg.explicit_path = get_tmpdir();
 
     // Use only basename of output_path to avoid embedding absolute paths in subdirectory.
-    // E.g. output_path="/home/user/rocprofsys-output" -> subdirectory="rocprofsys-output/%ppid%"
-    // (not "/home/user/rocprofsys-output/%ppid%"), so files go under get_tmpdir()/rocprofsys-output/.
+    // E.g. output_path="/home/user/rocprofsys-output" ->
+    // subdirectory="rocprofsys-output/%ppid%" (not
+    // "/home/user/rocprofsys-output/%ppid%"), so files go under
+    // get_tmpdir()/rocprofsys-output/.
     auto _output_path = settings::output_path();
     auto _pos         = _output_path.rfind('/');
     if(_pos != std::string::npos) _output_path = _output_path.substr(_pos + 1);

@@ -64,6 +64,7 @@ setup_tool_library_env()
     if(!path.empty())
     {
         setenv(env_name, path.c_str(), 0);
+        setenv("ROCP_TOOL_LIBRARIES", path.c_str(), 0);
         std::cout << "[rocprof-sys-attach] Using tool library: " << path << std::endl;
     }
 }

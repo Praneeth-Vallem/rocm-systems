@@ -55,6 +55,8 @@
 
 #include "logger/debug.hpp"
 
+#include <atomic>
+
 namespace rocprofsys
 {
 namespace gpu
@@ -82,12 +84,12 @@ check_amdsmi_error(amdsmi_status_t _code, const char* _file, int _line)
                                          static_cast<int>(_code), _msg));
 }
 
-bool amdsmi_initialized = false;
+std::atomic<bool> amdsmi_initialized{ false };
 
 bool
 amdsmi_init()
 {
-    if(amdsmi_initialized) return true;
+    if(amdsmi_initialized.exchange(true)) return true;
 
     try
     {
@@ -98,10 +100,10 @@ amdsmi_init()
 #    endif
         ROCPROFSYS_AMD_SMI_CALL(::amdsmi_init(init_flags));
         get_processor_handles();
-        amdsmi_initialized = true;
     } catch(std::exception& _e)
     {
         LOG_ERROR("Exception thrown initializing amd-smi: {}", _e.what());
+        amdsmi_initialized.store(false);
         return false;
     }
     return true;
@@ -181,7 +183,7 @@ bool
 reinitialize_amdsmi()
 {
 #if ROCPROFSYS_USE_ROCM > 0
-    amdsmi_initialized = false;
+    amdsmi_initialized.store(false);
     return amdsmi_init();
 #else
     return false;

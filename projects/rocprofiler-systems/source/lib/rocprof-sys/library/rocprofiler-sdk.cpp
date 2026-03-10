@@ -62,14 +62,11 @@
 #include <atomic>
 #include <cctype>
 #include <cstdint>
-#include <deque>
 #include <iostream>
 #include <mutex>
-#include <regex>
 #include <sstream>
 #include <string>
 #include <unistd.h>
-#include <unordered_map>
 #include <vector>
 
 namespace rocprofsys
@@ -80,8 +77,9 @@ namespace
 {
 using tool_agent_vec_t = std::vector<tool_agent>;
 
-client_data* tool_data      = new client_data{};
-bool         tool_fini_done = false;
+client_data*      tool_data = new client_data{};
+std::atomic<bool> tool_fini_done{ false };
+std::atomic<bool> tool_init_done{ false };
 
 void
 thread_precreate(rocprofiler_runtime_library_t /*lib*/, void* /*tool_data*/)
@@ -2187,6 +2185,7 @@ void
 flush()
 {
     if(!tool_data) return;
+
     for(auto itr : tool_data->get_buffers())
     {
         if(itr.handle > 0)
@@ -2270,6 +2269,9 @@ tool_hip_stream_callback(rocprofiler_callback_tracing_record_t record,
 int
 tool_init(rocprofiler_client_finalize_t fini_func, void* user_data)
 {
+    // Only initialize once per session
+    if(tool_init_done.exchange(true)) return 0;
+
     auto domains = settings::instance()->at("ROCPROFSYS_ROCM_DOMAINS");
 
     std::stringstream _domains_ss;
@@ -2510,8 +2512,7 @@ tool_init(rocprofiler_client_finalize_t fini_func, void* user_data)
 void
 tool_fini(void* callback_data)
 {
-    if(tool_fini_done) return;
-    tool_fini_done = true;
+    if(tool_fini_done.exchange(true)) return;
 
 #if(ROCPROFILER_VERSION >= 600)
     ompt_finalize_orphan_events();
@@ -2533,13 +2534,16 @@ tool_fini(void* callback_data)
     auto* _data        = as_client_data(callback_data);
     _data->client_id   = nullptr;
     _data->client_fini = nullptr;
+    delete tool_data;
+    tool_data = nullptr;
 }
 }  // namespace
 
 void
 reset_state()
 {
-    tool_fini_done = false;
+    tool_fini_done.store(false);
+    tool_init_done.store(false);
 }
 
 void
@@ -2608,11 +2612,92 @@ get_rocm_events_info()
 
     return tool_data->events_info;
 }
+
+#if ROCPROFILER_VERSION >= 10200
+
+void
+tool_attach_fini(void* /* tool_data */)
+{
+    // Prevent rocprofsys_finalize_hidden() from running concurrently (e.g., from atexit)
+    rocprofsys_set_finalization_done_hidden();
+
+    // Stop and flush SDK contexts/buffers so that buffer callbacks
+    // write their Perfetto events before Perfetto post-processing.
+    ::rocprofsys::rocprofiler_sdk::stop();
+    ::rocprofsys::rocprofiler_sdk::flush();
+
+#    if(ROCPROFILER_VERSION >= 600)
+    rocprofsys::rocprofiler_sdk::ompt_finalize_orphan_events();
+#    endif
+
+    if(config::get_use_process_sampling() && config::get_use_amd_smi())
+        amd_smi::shutdown();
+
+    if(get_counter_storage())
+    {
+        get_counter_storage()->clear();
+        delete get_counter_storage();
+        get_counter_storage() = nullptr;
+    }
+
+    // Flush any pending region cache entries
+    rocprofsys_flush_pending_region_cache_hidden();
+
+    // Write Perfetto trace output
+    if(get_use_perfetto())
+    {
+        bool _perfetto_output_error = false;
+        ::rocprofsys::perfetto::post_process(nullptr, _perfetto_output_error);
+        if(_perfetto_output_error)
+            LOG_ERROR("Perfetto output error occurred during attach finalization");
+    }
+
+    rocprofsys_finalize_hidden();
+}
+
+int
+tool_attach_init([[maybe_unused]] rocprofiler_client_detach_t detach_func,
+                 rocprofiler_context_id_t* context_ids, uint64_t context_ids_length,
+                 [[maybe_unused]] void* tool_data)
+{
+    static std::atomic<int> attach_count{ 0 };
+    auto                    current_count = attach_count.fetch_add(1) + 1;
+
+    if(current_count > 1)
+    {
+        // Re-attach: reset all guards to allow reinitialization
+        rocprofsys_finalization_done.store(false);
+        rocprofsys_init_library_done.store(false);
+        rocprofsys_init_tooling_done.store(0);
+        ::rocprofsys::reset_state();
+        reset_state();
+        LOG_DEBUG("Reset all guards for re-attach");
+
+        // Restart Perfetto for a new tracing session
+        if(get_use_perfetto()) ::rocprofsys::perfetto::start();
+
+        ::rocprofsys::set_state(::rocprofsys::State::Active);
+    }
+
+    // Start all contexts provided by the SDK
+    for(uint64_t i = 0; i < context_ids_length; ++i)
+    {
+        ROCPROFILER_CALL(rocprofiler_start_context(context_ids[i]));
+    }
+
+    ::rocprofsys::rocprofiler_sdk::start();
+
+    return 0;
+}
+#endif
+
 }  // namespace rocprofiler_sdk
 }  // namespace rocprofsys
 
 namespace
 {
+std::atomic<bool> sdk_configured{ false };
+
 /**
  * Initialize rocprofiler-sdk tool configuration.
  *
@@ -2629,6 +2714,9 @@ bool
 sdk_tool_configure(uint32_t version, const char* runtime_version,
                    rocprofiler_client_id_t* id)
 {
+    // Only configure once per attach session
+    if(sdk_configured.exchange(true)) return true;
+
     // Ensure tooling is initialized and state is Active
     if(!rocprofsys::config::settings_are_configured() ||
        rocprofsys::get_state() < rocprofsys::State::Active)
@@ -2664,6 +2752,7 @@ sdk_tool_configure(uint32_t version, const char* runtime_version,
 
     return true;
 }
+
 }  // namespace
 
 extern "C"
@@ -2694,36 +2783,6 @@ extern "C"
     }
 
 #if ROCPROFILER_VERSION >= 10200
-    int tool_attach_init([[maybe_unused]] rocprofiler_client_detach_t detach_func,
-                         rocprofiler_context_id_t*                    context_ids,
-                         uint64_t context_ids_length, [[maybe_unused]] void* tool_data)
-    {
-        // On re-attach, rocprofiler_configure_attach is NOT called again by the SDK.
-        // Only tool_attach_init is called. So we must ensure initialization happens here.
-        if(rocprofsys::get_state() != rocprofsys::State::Active)
-        {
-            // Reset guards and reinitialize for the new session
-            rocprofsys_reset_for_reattach_hidden();
-            rocprofsys_init_tooling_hidden();
-        }
-
-        // Start all contexts provided by the SDK
-        for(uint64_t i = 0; i < context_ids_length; ++i)
-        {
-            ROCPROFILER_CALL(rocprofiler_start_context(context_ids[i]));
-        }
-
-        return 0;
-    }
-
-    void tool_attach_fini(void* tool_data)
-    {
-        ::rocprofsys::rocprofiler_sdk::tool_fini(tool_data);
-        rocprofsys_finalize_hidden();
-        // Reset all guards and state to PreInit for potential re-attach
-        rocprofsys_reset_for_reattach_hidden();
-        ::rocprofsys::rocprofiler_sdk::reset_state();
-    }
 
     rocprofiler_tool_configure_attach_result_t* rocprofiler_configure_attach(
         uint32_t version, const char* runtime_version, [[maybe_unused]] uint32_t priority,
@@ -2732,8 +2791,10 @@ extern "C"
         if(!sdk_tool_configure(version, runtime_version, id)) return nullptr;
 
         static auto cfg = rocprofiler_tool_configure_attach_result_t{
-            sizeof(rocprofiler_tool_configure_attach_result_t), &tool_attach_init,
-            &tool_attach_fini, rocprofsys::rocprofiler_sdk::tool_data
+            sizeof(rocprofiler_tool_configure_attach_result_t),
+            &rocprofsys::rocprofiler_sdk::tool_attach_init,
+            &rocprofsys::rocprofiler_sdk::tool_attach_fini,
+            rocprofsys::rocprofiler_sdk::tool_data
         };
         return &cfg;
     }
