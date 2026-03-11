@@ -647,21 +647,25 @@ class AMDSMIParser(argparse.ArgumentParser):
             # Checks the values
             def __call__(self, parser, args, values, option_string=None):
                 if isinstance(values, str):
-                    # Convert percentage to fan level
                     if '%' in values:
                         try:
                             amdsmi_helpers.confirm_out_of_spec_warning()
-                            # Convert percentage to fan speed level
-                            values = (int(values[:-1]) / 100) * 255
-                            values = AMDSMIParser._custom_ceil(values) # Round up (Ceiling)
-                            setattr(args, self.dest, values)
+                            # Store percentage value with is_percentage flag
+                            # CLI will convert based on gpu_od availability
+                            percentage_value = int(values[:-1])
+                            if 0 <= percentage_value <= 100:
+                                # Store as tuple: (percentage_value, is_percentage=True)
+                                setattr(args, self.dest, (percentage_value, True))
+                            else:
+                                raise argparse.ArgumentError(self, f"Invalid argument: '{values}' needs to be 0-100%")
                         except ValueError as e:
                             raise argparse.ArgumentError(self, f"Invalid argument: '{values}' needs to be 0-100%")
-                    else: # Store the fan level as fan_speed
+                    else: # Store the direct hardware value
                         values = int(values)
                         if 0 <= values <= 255:
                             amdsmi_helpers.confirm_out_of_spec_warning()
-                            setattr(args, self.dest, values)
+                            # Store as tuple: (direct_value, is_percentage=False)
+                            setattr(args, self.dest, (values, False))
                         else:
                             raise argparse.ArgumentError(self, f"Invalid argument: '{values}' needs to be 0-255")
                 else:
