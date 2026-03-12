@@ -3025,7 +3025,7 @@ hsa_queue_t* Device::acquireQueue(uint32_t queue_size_hint, bool coop_queue,
         }
       }
       ClPrint(amd::LOG_DETAIL_DEBUG, amd::LOG_QUEUE,
-               "Device::acquireQueue: hsa_queue_create failed!");
+              "Device::acquireQueue: hsa_queue_create failed!");
       return nullptr;
     }
   }
@@ -3035,7 +3035,7 @@ hsa_queue_t* Device::acquireQueue(uint32_t queue_size_hint, bool coop_queue,
     hsa_status_t st = Hsa::queue_set_priority(queue, queue_priority);
     if (st != HSA_STATUS_SUCCESS) {
       ClPrint(amd::LOG_DETAIL_DEBUG, amd::LOG_QUEUE,
-               "Device::acquireQueue: hsa_amd_queue_set_priority failed!");
+              "Device::acquireQueue: hsa_amd_queue_set_priority failed!");
       Hsa::queue_destroy(queue);
       return nullptr;
     }
@@ -3114,10 +3114,8 @@ hsa_queue_t* Device::acquireQueue(uint32_t queue_size_hint, bool coop_queue,
       Hsa::queue_destroy(queue);
       return nullptr;
     }
-    if (cuMask.size() != 0) {
-      // FIXME if condition can probably be deleted and just return the queue
-      return queue;
-    }
+
+    return queue;
   }
 
   if (coop_queue) {
