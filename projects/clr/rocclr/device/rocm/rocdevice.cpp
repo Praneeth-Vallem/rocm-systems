@@ -3188,13 +3188,9 @@ void Device::releaseQueue(hsa_queue_t* queue, const std::vector<uint32_t>& cuMas
     }
   }  // Lock release
 
-  // hsa queues with cumask set are not being reused. Hence, if the app uses such queues,
-  //  we need to destroy them when the queue is released.
-  if (!cuMask.empty()) {
-    Hsa::queue_destroy(queue);
-  }
-
-  if (coop_queue) {  // cooperative queue
+  // hsa queues with cumask set and coop queues are not being reused. Hence, if the app uses such
+  // queues, we need to destroy them when the queue is released.
+  if (!cuMask.empty() || coop_queue) {
     ClPrint(amd::LOG_INFO, amd::LOG_QUEUE, "Deleting CG enabled hardware queue %p ",
             queue->base_address);
     Hsa::queue_destroy(queue);

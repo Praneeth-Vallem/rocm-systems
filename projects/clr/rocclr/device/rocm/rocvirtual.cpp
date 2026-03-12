@@ -1725,7 +1725,8 @@ VirtualGPU::VirtualGPU(Device& device, bool profiling, bool cooperative,
       fence_state_(Device::CacheState::kCacheStateInvalid),
       fence_dirty_(false),
       dedicated_queue_(dedicated_queue),
-      schedulerQueueThreadRunning_(false) {
+      schedulerQueueThreadRunning_(false),
+      hostcallBuffer_(nullptr) {
   index_ = device.numOfVgpus_++;
   gpu_device_ = device.getBackendDevice();
   printfdbg_ = nullptr;
