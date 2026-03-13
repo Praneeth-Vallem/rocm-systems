@@ -30,6 +30,42 @@ Simple Python executable script for invoking `python3 -m @ROCPD_EXE_MODULE@`
 """
 
 
+def _has_explicit_group_by_queue(argv):
+    for itr in argv:
+        if itr == "--group-by-queue":
+            return True
+        if itr.startswith("--group-by-queue="):
+            val = itr.split("=", 1)[1].strip().lower()
+            if val not in ("0", "false", "off", "no"):
+                return True
+    return False
+
+
+def _should_default_group_by_queue(argv, environ):
+    if _has_explicit_group_by_queue(argv):
+        return False
+
+    env_val = environ.get("ROCPD_GROUP_BY_QUEUE")
+    if env_val is not None:
+        return env_val.strip().lower() not in ("0", "false", "off", "no")
+
+    export_env = environ.get("ROCPD_PERFETTO_DEFAULT_GROUP_BY_QUEUE")
+    if export_env is not None:
+        return export_env.strip().lower() not in ("0", "false", "off", "no")
+
+    perfetto_like = False
+    for itr in argv:
+        lower = itr.lower()
+        if "perfetto" in lower or "pftrace" in lower:
+            perfetto_like = True
+            break
+        if lower.endswith(".pftrace") or lower.endswith(".perfetto-trace") or lower.endswith(".perfetto"):
+            perfetto_like = True
+            break
+
+    return perfetto_like
+
+
 def main(argv=sys.argv[1:], environ=dict(os.environ)):
     """
     Executes {sys.executable} -m @ROCPD_EXE_MODULE@ @ROCPD_EXE_MODULE_ARGS@
@@ -64,7 +100,11 @@ def main(argv=sys.argv[1:], environ=dict(os.environ)):
     # update PYTHONPATH environment variable
     environ["PYTHONPATH"] = ":".join(python_path)
 
-    args = [f"{sys.executable}", "-m", "@ROCPD_EXE_MODULE@"] + ROCPD_MODULE_ARGS + argv
+    effective_argv = list(argv)
+    if _should_default_group_by_queue(effective_argv, environ):
+        effective_argv = ["--group-by-queue"] + effective_argv
+
+    args = [f"{sys.executable}", "-m", "@ROCPD_EXE_MODULE@"] + ROCPD_MODULE_ARGS + effective_argv
 
     # does not return
     os.execvpe(args[0], args, env=environ)
