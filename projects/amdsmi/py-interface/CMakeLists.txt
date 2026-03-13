@@ -38,7 +38,7 @@ if(NOT GOOD_CLANG_FOUND)
     # keep old wrapper because no clang found
     message(
         AUTHOR_WARNING
-            "A wrapper will not be re-generated! Using old wrapper instead.\nSet -DBUILD_WRAPPER=ON to re-build the wrapper"
+        "A wrapper will not be re-generated! Using old wrapper instead.\nSet -DBUILD_WRAPPER=ON to re-build the wrapper"
     )
     # Still need Python3 for building the wheel package
     find_package(Python3 3.6 COMPONENTS Interpreter REQUIRED)
@@ -46,7 +46,8 @@ if(NOT GOOD_CLANG_FOUND)
         OUTPUT amdsmi_wrapper.py ${PY_PACKAGE_DIR}/amdsmi_wrapper.py
         DEPENDS ${AMD_SMI} ${CMAKE_CURRENT_SOURCE_DIR}/amdsmi_wrapper.py
         COMMAND mkdir -p ${PY_PACKAGE_DIR}
-        COMMAND  ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/amdsmi_wrapper.py ${PY_PACKAGE_DIR}/)
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/amdsmi_wrapper.py ${PY_PACKAGE_DIR}/
+    )
 else()
     find_package(Python3 3.6 COMPONENTS Interpreter Development REQUIRED)
     # --break-system-packages is needed for python 3.11
@@ -54,8 +55,10 @@ else()
     if(NOT Python3_VERSION VERSION_LESS "3.11")
         set(Python3_BREAK_SYSTEM_PACKAGES "--break-system-packages")
     endif()
-    add_custom_target(python_pre_reqs COMMAND ${Python3_EXECUTABLE} -m pip install ${Python3_BREAK_SYSTEM_PACKAGES}
-                                              ctypeslib2==${ctypeslib_ver_py})
+    add_custom_target(
+        python_pre_reqs
+        COMMAND ${Python3_EXECUTABLE} -m pip install ${Python3_BREAK_SYSTEM_PACKAGES} ctypeslib2==${ctypeslib_ver_py}
+    )
     # generate new wrapper
     configure_file(${PROJECT_SOURCE_DIR}/tools/generator.py generator.py @ONLY COPYONLY)
     add_custom_command(
@@ -67,7 +70,8 @@ else()
                 ${Python3_EXECUTABLE} generator.py "$<$<BOOL:${ENABLE_ESMI_LIB}>:-e -DENABLE_ESMI_LIB>" -i amdsmi.h -l
                 ${AMDSMI_PYTHON_LIB_PATH} -o ${CMAKE_CURRENT_SOURCE_DIR}/amdsmi_wrapper.py
         COMMAND mkdir -p ${PY_PACKAGE_DIR}
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/amdsmi_wrapper.py ${PY_PACKAGE_DIR}/)
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/amdsmi_wrapper.py ${PY_PACKAGE_DIR}/
+    )
 endif()
 
 # populate version string
@@ -82,14 +86,19 @@ add_custom_target(python_wrapper DEPENDS amdsmi_wrapper.py)
 
 # hard-linking instead of copying avoids unnecessarry regeneration of packaged files
 add_custom_command(
-    OUTPUT ${PY_PACKAGE_DIR}/__init__.py ${PY_PACKAGE_DIR}/amdsmi_exception.py ${PY_PACKAGE_DIR}/amdsmi_interface.py
-           ${PY_PACKAGE_DIR}/README.md ${PY_PACKAGE_DIR}/LICENSE
+    OUTPUT
+        ${PY_PACKAGE_DIR}/__init__.py
+        ${PY_PACKAGE_DIR}/amdsmi_exception.py
+        ${PY_PACKAGE_DIR}/amdsmi_interface.py
+        ${PY_PACKAGE_DIR}/README.md
+        ${PY_PACKAGE_DIR}/LICENSE
     DEPENDS python_wrapper
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py ${PY_PACKAGE_DIR}/
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/amdsmi_exception.py ${PY_PACKAGE_DIR}/
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/amdsmi_interface.py ${PY_PACKAGE_DIR}/
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/README.md ${PY_PACKAGE_DIR}/
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PROJECT_SOURCE_DIR}/LICENSE ${PY_PACKAGE_DIR}/)
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PROJECT_SOURCE_DIR}/LICENSE ${PY_PACKAGE_DIR}/
+)
 
 # copy libamd_smi.so to allow for a self-contained python package
 add_custom_command(OUTPUT ${PY_PACKAGE_DIR}/${AMDSMI_PYTHON_LIB_NAME} DEPENDS ${AMDSMI_PYTHON_LIB_PATH}
@@ -125,7 +134,8 @@ install(
     FILES ${CMAKE_CURRENT_BINARY_DIR}/${PY_BUILD_DIR}/pyproject.toml
           ${CMAKE_CURRENT_BINARY_DIR}/${PY_PACKAGE_DIR}/_version.py
     DESTINATION ${PY_WRAPPER_INSTALL_DIR}
-    COMPONENT dev)
+    COMPONENT dev
+)
 
 install(
     DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/${PY_PACKAGE_DIR}
