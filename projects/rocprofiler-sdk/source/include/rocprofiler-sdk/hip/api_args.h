@@ -3449,7 +3449,6 @@ typedef union rocprofiler_hip_api_args_t
         hipMemLocation*      location;
         hipMemAllocationType type;
     } hipMemGetDefaultMemPool;
-
 #endif
 } rocprofiler_hip_api_args_t;
 
