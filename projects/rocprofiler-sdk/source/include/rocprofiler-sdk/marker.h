@@ -25,3 +25,66 @@
 #include <rocprofiler-sdk/marker/api_args.h>
 #include <rocprofiler-sdk/marker/api_id.h>
 #include <rocprofiler-sdk/marker/table_id.h>
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * @brief Marker-tracing lifecycle and process state.
+ *
+ * These declarations provide a minimal ABI surface for distinguishing the
+ * original process from forked child processes and for guarding against
+ * duplicate marker initialization/finalization in persistent worker children.
+ */
+typedef enum rocprofiler_marker_lifecycle_state_t
+{
+    ROCPROFILER_MARKER_LIFECYCLE_STATE_UNINITIALIZED = 0,
+    ROCPROFILER_MARKER_LIFECYCLE_STATE_INITIALIZING  = 1,
+    ROCPROFILER_MARKER_LIFECYCLE_STATE_INITIALIZED   = 2,
+    ROCPROFILER_MARKER_LIFECYCLE_STATE_FINALIZING    = 3,
+    ROCPROFILER_MARKER_LIFECYCLE_STATE_FINALIZED     = 4
+} rocprofiler_marker_lifecycle_state_t;
+
+typedef struct rocprofiler_marker_process_state_t
+{
+    /**
+     * @brief Process ID that originally initialized marker tracing state.
+     */
+    uint64_t parent_pid;
+
+    /**
+     * @brief Current process ID observed by the marker runtime.
+     */
+    uint64_t current_pid;
+
+    /**
+     * @brief True if the current process is a forked child of the original
+     * marker-tracing parent process.
+     */
+    bool is_forked_child;
+
+    /**
+     * @brief True if marker tracing initialization has already been performed
+     * in the current process.
+     */
+    bool init_seen_in_process;
+
+    /**
+     * @brief True if marker tracing finalization has already been performed
+     * in the current process.
+     */
+    bool fini_seen_in_process;
+
+    /**
+     * @brief Current marker-tracing lifecycle state.
+     */
+    rocprofiler_marker_lifecycle_state_t lifecycle_state;
+} rocprofiler_marker_process_state_t;
+
+#ifdef __cplusplus
+}
+#endif

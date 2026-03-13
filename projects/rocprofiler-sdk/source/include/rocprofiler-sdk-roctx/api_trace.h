@@ -36,10 +36,10 @@ ROCTX_EXTERN_C_INIT
 #define ROCTX_API_TABLE_VERSION_STEP  0
 
 #define ROCTX_CORE_API_TABLE_VERSION_MAJOR 0
-#define ROCTX_CORE_API_TABLE_VERSION_STEP  0
+#define ROCTX_CORE_API_TABLE_VERSION_STEP  1
 
 #define ROCTX_CONTROL_API_TABLE_VERSION_MAJOR 0
-#define ROCTX_CONTROL_API_TABLE_VERSION_STEP  0
+#define ROCTX_CONTROL_API_TABLE_VERSION_STEP  1
 
 #define ROCTX_RESOURCE_API_TABLE_VERSION_MAJOR 0
 #define ROCTX_RESOURCE_API_TABLE_VERSION_STEP  0
@@ -57,23 +57,27 @@ typedef int (*roctxNameHsaAgent_fn_t)(const char* name, const struct hsa_agent_s
 typedef int (*roctxNameHipDevice_fn_t)(const char* name, int device_id);
 typedef int (*roctxNameHipStream_fn_t)(const char* name, const struct ihipStream_t* stream);
 typedef int (*roctxGetThreadId_fn_t)(roctx_thread_id_t* tid);
+typedef int (*roctxChildProcessReset_fn_t)(void);
+typedef int (*roctxChildProcessDisable_fn_t)(void);
 
 typedef struct roctxCoreApiTable_t
 {
-    uint64_t              size;
-    roctxMarkA_fn_t       roctxMarkA_fn;
-    roctxRangePushA_fn_t  roctxRangePushA_fn;
-    roctxRangePop_fn_t    roctxRangePop_fn;
-    roctxRangeStartA_fn_t roctxRangeStartA_fn;
-    roctxRangeStop_fn_t   roctxRangeStop_fn;
-    roctxGetThreadId_fn_t roctxGetThreadId_fn;
+    uint64_t                    size;
+    roctxMarkA_fn_t             roctxMarkA_fn;
+    roctxRangePushA_fn_t        roctxRangePushA_fn;
+    roctxRangePop_fn_t          roctxRangePop_fn;
+    roctxRangeStartA_fn_t       roctxRangeStartA_fn;
+    roctxRangeStop_fn_t         roctxRangeStop_fn;
+    roctxGetThreadId_fn_t       roctxGetThreadId_fn;
+    roctxChildProcessReset_fn_t roctxChildProcessReset_fn;
 } roctxCoreApiTable_t;
 
 typedef struct roctxControlApiTable_t
 {
-    uint64_t                 size;
-    roctxProfilerPause_fn_t  roctxProfilerPause_fn;
-    roctxProfilerResume_fn_t roctxProfilerResume_fn;
+    uint64_t                      size;
+    roctxProfilerPause_fn_t       roctxProfilerPause_fn;
+    roctxProfilerResume_fn_t      roctxProfilerResume_fn;
+    roctxChildProcessDisable_fn_t roctxChildProcessDisable_fn;
 } roctxControlApiTable_t;
 
 typedef struct roctxNameApiTable_t

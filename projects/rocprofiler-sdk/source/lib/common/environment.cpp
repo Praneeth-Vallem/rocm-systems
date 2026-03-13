@@ -31,8 +31,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <unistd.h>
 
 namespace rocprofiler
 {
@@ -73,7 +75,7 @@ get_env(std::string_view env_id, bool _default)
         }
 
         for(size_t i = 0; i < std::string_view{env_var}.length(); ++i)
-            env_var[i] = tolower(env_var[i]);
+            env_var[i] = static_cast<char>(tolower(env_var[i]));
 
         for(const auto& itr : {"off", "false", "no", "n", "f", "0"})
             if(std::string_view{env_var} == itr) return false;
@@ -144,7 +146,7 @@ set_env(std::string_view env_id,
     template TYPE get_env<TYPE>(                                                                   \
         std::string_view,                                                                          \
         TYPE,                                                                                      \
-        std::enable_if_t<std::is_integral<TYPE>::value || std::is_floating_point<TYPE>::value,     \
+        std::enable_if_t<std::is_integral<TYPE>::value || std::is_floating_point<TYPE>::value,    \
                          sfinae>);
 
 #define SPECIALIZE_SET_ENV(TYPE) template int set_env<TYPE>(std::string_view, TYPE, int);
@@ -175,55 +177,71 @@ SPECIALIZE_SET_ENV(uint32_t)
 SPECIALIZE_SET_ENV(uint64_t)
 }  // namespace impl
 
+namespace
+{
+void
+configure_child_process_environment()
+{
+    // Record the originating process ID for child/fork detection if not already set.
+    auto parent_pid = impl::get_env<uint64_t>("ROCPROFILER_PARENT_PID", 0);
+    auto current_pid =
+        static_cast<uint64_t>(::getpid());  // NOLINT(performance-no-int-to-ptr, hicpp-signed-bitwise)
+
+    if(parent_pid == 0)
+    {
+        (void) impl::set_env("ROCPROFILER_PARENT_PID", current_pid, 0);
+        return;
+    }
+
+    // If the PID changed, we are executing in a child process that inherited environment
+    // and potentially unsafe profiler/marker interception state from a fork.
+    if(parent_pid != current_pid)
+    {
+        (void) impl::set_env("ROCPROFILER_IS_CHILD_PROCESS", true, 1);
+
+        // Marker tracing / ROCTX interception is not safe to inherit across fork for some
+        // DataLoader worker configurations. Provide an environment-driven hook to disable it
+        // in child processes by default, while allowing explicit opt-in to child profiling.
+        const auto allow_child_marker_trace =
+            impl::get_env("ROCPROFILER_ENABLE_CHILD_MARKER_TRACE",
+                          impl::get_env("ROCPROFILER_CHILD_MARKER_TRACE", false));
+
+        if(!allow_child_marker_trace)
+        {
+            (void) impl::set_env("ROCPROFILER_DISABLE_ROCTX_INTERCEPT", true, 1);
+            (void) impl::set_env("ROCPROFILER_MARKER_TRACE", false, 1);
+            (void) impl::set_env("ROCPROFILER_CHILD_DISABLE_ROCTX_INTERCEPT", true, 1);
+        }
+        else
+        {
+            // Signal downstream initialization to safely reinitialize marker/ROCTX state
+            // instead of using inherited state.
+            (void) impl::set_env("ROCPROFILER_REINITIALIZE_ROCTX_INTERCEPT", true, 1);
+        }
+    }
+}
+}  // namespace
+
 env_store::env_store(std::initializer_list<env_config>&& _container)
 {
+    configure_child_process_environment();
+
     for(const auto& itr : _container)
     {
-        m_original.emplace_back(env_config{itr.env_name, get_env(itr.env_name, ""), 1});
-        m_modified.emplace_back(env_config{itr.env_name, itr.env_value, 1});
-    }
-}
+        if(itr.env_name.empty()) continue;
 
-env_store::~env_store() { pop(); }
+        auto env_name = std::string{itr.env_name};
+        auto env_val  = impl::get_env(itr.env_name, itr.default_value);
 
-bool
-env_store::push()
-{
-    // not that push ignored bc already pushed
-    if(m_pushed) return false;
-
-    for(const auto& itr : m_modified)
-        itr();
-
-    m_pushed = true;
-    return true;
-}
-
-bool
-env_store::pop(bool unset_if_empty)
-{
-    if(!m_pushed) return false;
-
-    for(const auto& itr : m_original)
-    {
-        auto _current = get_env(itr.env_name, "");
-        if(!unset_if_empty && itr.env_value.empty())
-            continue;
-        else if(_current == itr.env_value)
-            continue;
-        else if(_current != itr.env_value)
+        if(itr.description.empty())
         {
-            ROCP_INFO << fmt::format("[rocprofiler][env][pop] {}=\"{}\" => {}=\"{}\"",
-                                     itr.env_name,
-                                     _current,
-                                     itr.env_name,
-                                     itr.env_value);
+            emplace(env_name, env_val);
         }
-        itr();
+        else
+        {
+            emplace(env_name, env_variable{env_name, env_val, itr.description});
+        }
     }
-
-    m_pushed = false;
-    return true;
 }
 }  // namespace common
 }  // namespace rocprofiler
