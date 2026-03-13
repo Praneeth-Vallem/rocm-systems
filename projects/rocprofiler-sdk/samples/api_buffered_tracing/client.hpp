@@ -29,9 +29,72 @@
 #endif
 
 #include <cstdint>
+#include <set>
+#include <utility>
+#include <vector>
 
 namespace client
 {
+struct tracing_category_config
+{
+    uint32_t category       = 0;
+    uint32_t operation_count = 0;
+};
+
+struct buffered_tracing_config
+{
+    std::set<uint32_t> enabled_categories = {};
+    std::vector<tracing_category_config> category_operations = {};
+
+    void
+    enable_category(uint32_t category, uint32_t operation_count = 0)
+    {
+        enabled_categories.insert(category);
+        if(operation_count > 0) set_operation_count(category, operation_count);
+    }
+
+    void
+    set_operation_count(uint32_t category, uint32_t operation_count)
+    {
+        for(auto& itr : category_operations)
+        {
+            if(itr.category == category)
+            {
+                itr.operation_count = operation_count;
+                return;
+            }
+        }
+        category_operations.emplace_back(tracing_category_config{category, operation_count});
+    }
+
+    bool
+    is_category_enabled(uint32_t category) const
+    {
+        return (enabled_categories.count(category) > 0);
+    }
+
+    uint32_t
+    get_operation_count(uint32_t category) const
+    {
+        for(const auto& itr : category_operations)
+        {
+            if(itr.category == category) return itr.operation_count;
+        }
+        return 0;
+    }
+
+    bool
+    is_valid_record(uint32_t category, uint32_t operation) const
+    {
+        if(!is_category_enabled(category)) return false;
+
+        auto operation_count = get_operation_count(category);
+        if(operation_count == 0) return true;
+
+        return (operation < operation_count);
+    }
+};
+
 void
 setup() CLIENT_API;
 
@@ -46,4 +109,13 @@ stop() CLIENT_API;
 
 void
 identify(uint64_t corr_id) CLIENT_API;
+
+buffered_tracing_config&
+get_buffered_tracing_config() CLIENT_API;
+
+bool
+is_category_enabled(uint32_t category) CLIENT_API;
+
+bool
+is_valid_buffered_record(uint32_t category, uint32_t operation) CLIENT_API;
 }  // namespace client
