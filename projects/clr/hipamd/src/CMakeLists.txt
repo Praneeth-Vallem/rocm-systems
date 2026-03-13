@@ -204,9 +204,13 @@ endif()
 # Short-Term solution for pre-compiled headers for online compilation
 # Enable pre compiled header
 if(__HIP_ENABLE_PCH)
+  set(CXX_COMPILER_DIR)
+  if(CXX_COMPILER_NAME MATCHES "^clang\\+\\+$|^clang$")
+    get_filename_component(CXX_COMPILER_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+  endif()
   find_program(CLANG_EXEC
     NAMES clang
-    PATHS ${ROCM_PATH}/lib/llvm/bin
+    PATHS ${ROCM_PATH}/lib/llvm/bin ${CXX_COMPILER_DIR}
     NO_DEFAULT_PATH
     REQUIRED)
   get_filename_component(CLANG_BIN_DIR ${CLANG_EXEC} DIRECTORY)
