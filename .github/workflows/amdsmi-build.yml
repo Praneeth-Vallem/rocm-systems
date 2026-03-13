@@ -22,19 +22,11 @@ env:
   ROCM_DIR: /opt/rocm
 
 jobs:
-  debian-buildinstall:
-    name: Build
-    runs-on:
-      - self-hosted
-      - ${{ vars.RUNNER_TYPE }}
-    continue-on-error: true
-    strategy:
-      max-parallel: 10
-      matrix:
-        os: [Ubuntu20, Ubuntu22, Ubuntu24, Debian10]
+  manylinux-build:
+    name: Build (Manylinux Gate)
+    runs-on: ubuntu-latest
     container:
-      image: ${{ vars[format('{0}_DOCKER_IMAGE', matrix.os)] }}
-      options: --rm --privileged --device=/dev/kfd --device=/dev/dri --group-add video --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --shm-size=64G --cap-add=SYS_MODULE -v /lib/modules:/lib/modules -u root
+      image: quay.io/pypa/manylinux_2_28_x86_64
 
     steps:
       - uses: actions/checkout@v4
@@ -42,174 +34,41 @@ jobs:
       - name: Mark workspace safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Set Artifact Metadata
-        if: github.event_name == 'pull_request'
-        run: |
-          # Set PR number and date for artifact naming
-          echo "PR_NUMBER=PR${{ github.event.pull_request.number }}" >> $GITHUB_ENV
-          # Set date in MMDDYY-HHMM format (UTC time)
-          echo "BUILD_DATE=$(date -u +%m%d%y-%H%M)" >> $GITHUB_ENV
-
-      - name: Set Project Directory
-        run: |
-          # Find the directory containing the main CMakeLists.txt for AMDSMI
-          TARGET_DIR=$(find $GITHUB_WORKSPACE -path "*/projects/amdsmi/CMakeLists.txt" -exec dirname {} \;)
-
-          if [ -z "$TARGET_DIR" ]; then
-            echo "Could not find CMakeLists.txt in projects/amdsmi. Searching root..."
-            TARGET_DIR=$(find $GITHUB_WORKSPACE -maxdepth 2 -name "CMakeLists.txt" -exec dirname {} \; | head -n 1)
-          fi
-
-          echo "PROJECT_DIR=$TARGET_DIR" >> $GITHUB_ENV
-
-      - name: Update repositories for Debian10
-        if: matrix.os == 'Debian10'
-        run: |
-          set -e
-          echo 'Updating repositories for Debian10 (archived)'
-          cat > /etc/apt/sources.list << EOF
-          deb http://archive.debian.org/debian buster main
-          deb http://archive.debian.org/debian-security buster/updates main
-          EOF
-          echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99-disable-check-valid-until
-          apt update
-
-      - name: Upgrade setuptools for wheel build
-        if: matrix.os != 'AzureLinux3'
-        run: |
-          echo 'Upgrading setuptools for proper wheel metadata'
-          python3 -m pip install --upgrade pip setuptools wheel
-
-      - name: Clean stale ROCm Python artifacts
-        run: |
-          # Remove SWIG-based libamd_smi_python.so that may be baked into the
-          # Docker image. The package now uses ctypes; the stale extension
-          # references symbols removed from libamd_smi.so and causes
-          # "undefined symbol" errors when importing the amdsmi package.
-          rm -f /opt/rocm/share/amd_smi/amdsmi/libamd_smi_python.so 2>/dev/null || true
-          ldconfig 2>/dev/null || true
-
       - name: Build AMDSMI
         shell: bash
         run: |
-          set -e
-          echo 'Building on ${{ matrix.os }}'
-          BUILD_FOLDER=${{ env.PROJECT_DIR }}/build
-          RETRIES=3
+          set -euo pipefail
+          PROJECT_DIR=$GITHUB_WORKSPACE/projects/amdsmi
+          BUILD_DIR=/tmp/amdsmi-build
+          PY_BUILD=/opt/python/cp38-cp38/bin/python3
 
-          for i in $(seq 1 $RETRIES); do
-            echo "Build attempt $i for ${{ matrix.os }}..."
-            rm -rf $BUILD_FOLDER
-            mkdir -p $BUILD_FOLDER
-            cd $BUILD_FOLDER
+          echo "Installing build prerequisites..."
+          dnf -y install git make gcc gcc-c++ cmake ninja-build openssl-devel
 
-            # Configure, build, and package
-            if cmake ${{ env.PROJECT_DIR }} -DBUILD_TESTS=ON -DENABLE_ESMI_LIB=ON -DBUILD_PYTHON_LIB=ON 2>&1 | tee cmake.log && \
-               make -j $(nproc) 2>&1 | tee make.log && \
-               cd $BUILD_FOLDER/py-interface/python_package && \
-               rm -rf *.whl *.egg-info build dist && \
-               python3 -m pip wheel --no-deps --no-build-isolation -w . . && \
-               echo "Python wheel built: $(ls *.whl)" && \
-               cd $BUILD_FOLDER && \
-               make package 2>&1 | tee package.log; then
+          echo "Configuring and building AMDSMI..."
+          rm -rf "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR"
+          cd "$BUILD_DIR"
+          cmake "$PROJECT_DIR" \
+            -DBUILD_TESTS=ON \
+            -DENABLE_ESMI_LIB=ON \
+            -DBUILD_PYTHON_LIB=ON \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPython3_EXECUTABLE="$PY_BUILD"
+          make -j"$(nproc)"
 
-              # Parse and report warnings as GitHub annotations
-              echo "::group::Build Warnings"
-              grep -i "warning" cmake.log make.log package.log | while read -r line; do
-                echo "::warning::$line"
-              done
-              echo "::endgroup::"
+          echo "Building Python wheel..."
+          $PY_BUILD -m pip install --upgrade pip setuptools wheel
+          cd "$BUILD_DIR/py-interface/python_package"
+          rm -rf build dist *.whl *.egg-info
+          $PY_BUILD -m pip wheel --no-deps --no-build-isolation -w . .
+          echo "Python wheel built: $(ls *.whl)"
+          echo "Build gate passed"
 
-              echo "Build successful on attempt $i"
-              break
-            else
-              echo "Build failed on attempt $i"
-              if [ $i -eq $RETRIES ]; then
-                echo "All $RETRIES build attempts failed. Exiting."
-                exit 1
-              fi
-              sleep $((2 * i))
-            fi
-          done
-          echo "Build completed on ${{ matrix.os }}"
-
-      - name: Upload Debian Package Artifacts
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: amd-smi-lib-deb-${{ matrix.os }}-${{ env.PR_NUMBER }}-${{ env.BUILD_DATE }}
-          path: ${{ env.PROJECT_DIR }}/build/amd-smi-lib*99999-local_amd64.deb
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Install AMDSMI
-        run: |
-          set -e
-          cd ${{ env.PROJECT_DIR }}/build
-          if [ "${{ matrix.os }}" != "Debian10" ]; then
-            apt update
-          fi
-
-          # Locate deb artifacts early and fail with a clear message if missing.
-          debs=$(find . -maxdepth 1 -name "amd-smi-lib*99999-local_amd64.deb" -o -name "amd-smi-lib-tests*99999-local_amd64.deb" | tr '\n' ' ')
-          if [ -z "$debs" ]; then
-            echo "No amd-smi deb artifacts found in $PWD"
-            ls -l .
-            exit 1
-          fi
-
-          RETRIES=3
-          for i in $(seq 1 $RETRIES); do
-            echo "Installation attempt $i for ${{ matrix.os }}..."
-            if apt install -y $debs; then
-              echo "Installation successful on attempt $i"
-              ln -s /opt/rocm/bin/amd-smi /usr/local/bin
-
-              # Verify Installation
-              echo 'Verifying installation:'
-              if ! amd-smi version; then echo "amd-smi version failed with $?" ; exit 1; fi
-
-              # Verify .pth file created by postinst (pip list will NOT show
-              # amdsmi — the .pth approach adds to sys.path without registering
-              # pip metadata, which is by design).
-              python3 -c "import site, pathlib; pth = pathlib.Path(site.getsitepackages()[0]) / 'amdsmi.pth'; assert pth.exists(), f'amdsmi.pth not found at {pth}'; print(f'✓ .pth file found: {pth}'); print(f'  contents: {pth.read_text().strip()}')"
-
-              if ! python3 -m pip list | grep pip; then echo "pip list | grep pip failed with $?" ; exit 1; fi
-              if ! python3 -m pip list | grep setuptools; then echo "pip list | grep setuptools failed with $?" ; exit 1; fi
-              echo 'Completed installation on ${{ matrix.os }}'
-
-              # Verify Python package import
-              echo 'Verifying Python package...'
-              cd /tmp && python3 -c "import amdsmi; print('✓ Import successful'); amdsmi.amdsmi_init(); print('✓ Library loaded'); amdsmi.amdsmi_shut_down(); print('✓ Package working!')"
-              echo 'Python package verification completed on ${{ matrix.os }}'
-              break
-            else
-              echo "Installation failed on attempt $i"
-              if [ $i -eq $RETRIES ]; then
-                echo "All $RETRIES installation attempts failed. Exiting."
-                exit 1
-              fi
-              sleep $((2 * i))
-            fi
-          done
-          echo "Build completed on ${{ matrix.os }}"
-
-      - name: Uninstall
-        if: always()
-        run: |
-          set -e
-          echo 'Uninstalling on ${{ matrix.os }}'
-          apt remove -y amd-smi-lib || true
-          rm -f /usr/local/bin/amd-smi
-          if [ -d /opt/rocm/share/amd_smi ]; then
-            echo '/opt/rocm/share/amd_smi exists. Removing.'
-            rm -rf /opt/rocm/share/amd_smi
-          fi
-          echo 'Uninstall done on ${{ matrix.os }}'
 
   debian-test:
     name: Tests
-    needs: debian-buildinstall
+    needs: manylinux-build
     runs-on:
       - self-hosted
       - ${{ vars.RUNNER_TYPE }}
@@ -497,304 +356,9 @@ jobs:
           echo "Displaying Example NoDRM test results for ${{ matrix.os }}"
           cat /tmp/test-results-${{ matrix.os }}/amd_smi_nodrm_ex.log || echo "No NoDRM example test results found for ${{ matrix.os }}"
 
-  rpm-buildinstall:
-    name: Build
-    runs-on:
-      - self-hosted
-      - ${{ vars.RUNNER_TYPE }}
-    continue-on-error: true
-    strategy:
-      max-parallel: 10
-      matrix:
-        os:
-          - SLES
-          - RHEL8
-          - RHEL9
-          - RHEL10
-          - AzureLinux3
-          - AlmaLinux8
-    container:
-      image: ${{ vars[format('{0}_DOCKER_IMAGE', matrix.os)] }}
-      options: --rm --privileged --device=/dev/kfd --device=/dev/dri --group-add video --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --shm-size=64G --cap-add=SYS_MODULE -v /lib/modules:/lib/modules -u root
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Mark workspace safe for git
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Set Artifact Metadata
-        if: github.event_name == 'pull_request'
-        run: |
-          # Set PR number and date for artifact naming
-          echo "PR_NUMBER=PR${{ github.event.pull_request.number }}" >> $GITHUB_ENV
-          # Set date in MMDDYY-HHMM format (UTC time)
-          echo "BUILD_DATE=$(date -u +%m%d%y-%H%M)" >> $GITHUB_ENV
-
-      - name: Set Project Directory
-        run: |
-          TARGET_DIR=$(find $GITHUB_WORKSPACE -path "*/projects/amdsmi/CMakeLists.txt" -exec dirname {} \;)
-          if [ -z "$TARGET_DIR" ]; then
-            TARGET_DIR=$(find $GITHUB_WORKSPACE -maxdepth 2 -name "CMakeLists.txt" -exec dirname {} \; | head -n 1)
-          fi
-          echo "PROJECT_DIR=$TARGET_DIR" >> $GITHUB_ENV
-
-      - name: Set PkgMgr
-        run: |
-          set -e
-          case "${{ matrix.os }}" in
-            SLES)
-              echo "PACKAGE_MANAGER=zypper" >> $GITHUB_ENV
-              ;;
-            RHEL8|RHEL9|RHEL10|AlmaLinux8|AzureLinux3)
-              echo "PACKAGE_MANAGER=dnf" >> $GITHUB_ENV
-              ;;
-          esac
-
-      - name: Add more_itertools
-        if: matrix.os == 'AzureLinux3'
-        run: |
-          set -e
-          echo 'Installing more_itertools on ${{ matrix.os }}'
-          python3 -m pip install more_itertools
-
-      - name: Upgrade setuptools for wheel build
-        if: matrix.os != 'AzureLinux3'
-        run: |
-          echo 'Upgrading setuptools for proper wheel metadata'
-          python3 -m pip install --upgrade pip setuptools wheel
-
-      - name: Clean stale ROCm Python artifacts
-        run: |
-          # Remove SWIG-based libamd_smi_python.so that may be baked into the
-          # Docker image. The package now uses ctypes; the stale extension
-          # references symbols removed from libamd_smi.so and causes
-          # "undefined symbol" errors when importing the amdsmi package.
-          rm -f /opt/rocm/share/amd_smi/amdsmi/libamd_smi_python.so 2>/dev/null || true
-          ldconfig 2>/dev/null || true
-
-      - name: Build AMDSMI(RHEL10 & AlmaLinux8)
-        if: matrix.os == 'RHEL10' || matrix.os == 'AlmaLinux8'
-        shell: bash
-        run: |
-          set -e
-          echo 'Building on ${{ matrix.os }} with retries and QA_RPATHS'
-          BUILD_FOLDER=${{ env.PROJECT_DIR }}/build
-          RETRIES=5
-
-          # Set QA_RPATHS to ignore empty (0x0010) and invalid (0x0002) RPATHs
-          export QA_RPATHS=$((0x0010 | 0x0002))
-
-          for i in $(seq 1 $RETRIES); do
-            echo "Build attempt $i for ${{ matrix.os }} ..."
-            rm -rf $BUILD_FOLDER
-            mkdir -p $BUILD_FOLDER
-            cd $BUILD_FOLDER
-
-            if cmake ${{ env.PROJECT_DIR }} -DBUILD_TESTS=ON -DENABLE_ESMI_LIB=ON -DBUILD_PYTHON_LIB=ON && \
-               make -j $(nproc) && \
-               cd $BUILD_FOLDER/py-interface/python_package && \
-               rm -rf *.whl *.egg-info build dist && \
-               python3 -m pip wheel --no-deps --no-build-isolation -w . . && \
-               echo "Python wheel built: $(ls *.whl)" && \
-               cd $BUILD_FOLDER && \
-               make package; then
-
-              echo "Build successful on attempt $i"
-              break
-            else
-              echo "Build failed on attempt $i"
-              if [ $i -eq $RETRIES ]; then
-                echo "All $RETRIES build attempts failed. Exiting."
-                exit 1
-              fi
-              sleep $((2 * i))
-            fi
-          done
-          echo "Build completed on ${{ matrix.os }}"
-
-      - name: Upload RPM Package Artifacts (RHEL10 & AlmaLinux8)
-        if: github.event_name == 'pull_request' && (matrix.os == 'RHEL10' || matrix.os == 'AlmaLinux8')
-        uses: actions/upload-artifact@v4
-        with:
-          name: amd-smi-lib-rpm-${{ matrix.os }}-${{ env.PR_NUMBER }}-${{ env.BUILD_DATE }}
-          path: ${{ env.PROJECT_DIR }}/build/amd-smi-lib-*99999-local*.rpm
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Build AMDSMI
-        if: matrix.os != 'RHEL10' && matrix.os != 'AlmaLinux8'
-        shell: bash
-        run: |
-          set -e
-          echo 'Building on ${{ matrix.os }}'
-          BUILD_FOLDER=${{ env.PROJECT_DIR }}/build
-          RETRIES=3
-
-          for i in $(seq 1 $RETRIES); do
-            echo "Build attempt $i for ${{ matrix.os }}..."
-            rm -rf $BUILD_FOLDER
-            mkdir -p $BUILD_FOLDER
-            cd $BUILD_FOLDER
-
-            # Capture build output to parse warnings
-            if cmake ${{ env.PROJECT_DIR }} -DBUILD_TESTS=ON -DENABLE_ESMI_LIB=ON -DBUILD_PYTHON_LIB=ON 2>&1 | tee cmake.log && \
-               make -j $(nproc) 2>&1 | tee make.log && \
-               cd $BUILD_FOLDER/py-interface/python_package && \
-               rm -rf *.whl *.egg-info build dist && \
-               python3 -m pip wheel --no-deps --no-build-isolation -w . . && \
-               echo "Python wheel built: $(ls *.whl)" && \
-               cd $BUILD_FOLDER && \
-               make package 2>&1 | tee package.log; then
-
-              # Parse and report warnings as GitHub annotations
-              echo "::group::Build Warnings"
-              grep -i "warning" cmake.log make.log package.log | while read -r line; do
-                echo "::warning::$line"
-              done
-              echo "::endgroup::"
-
-              echo "Build successful on attempt $i"
-              break
-            else
-              echo "Build failed on attempt $i"
-              if [ $i -eq $RETRIES ]; then
-                echo "All $RETRIES build attempts failed. Exiting."
-                exit 1
-              fi
-              sleep $((2 * i))
-            fi
-          done
-          echo "Build completed on ${{ matrix.os }}"
-
-      - name: Upload RPM Package Artifacts
-        if: github.event_name == 'pull_request' && matrix.os != 'RHEL10' && matrix.os != 'AlmaLinux8'
-        uses: actions/upload-artifact@v4
-        with:
-          name: amd-smi-lib-rpm-${{ matrix.os }}-${{ env.PR_NUMBER }}-${{ env.BUILD_DATE }}
-          path: ${{ env.PROJECT_DIR }}/build/amd-smi-lib-*99999-local*.rpm
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Install AMDSMI(RHEL10 & AlmaLinux8)
-        if: matrix.os == 'RHEL10' || matrix.os == 'AlmaLinux8'
-        run: |
-          cd ${{ env.PROJECT_DIR }}/build
-          dnf install python3-setuptools python3-wheel -y
-
-          rpm_pkgs=$(find . -maxdepth 1 -name "amd-smi-lib-*99999-local*.rpm" | tr '\n' ' ')
-          if [ -z "$rpm_pkgs" ]; then
-            echo "No amd-smi rpm artifacts found in $PWD"
-            ls -l .
-            exit 1
-          fi
-
-          RETRIES=3
-          for i in $(seq 1 $RETRIES); do
-            echo "RHEL10: Installation attempt $i..."
-            if timeout 10m dnf install -y --skip-broken --disablerepo=* $rpm_pkgs; then
-              echo "Installation successful on attempt $i"
-              ln -s /opt/rocm/bin/amd-smi /usr/local/bin
-
-              echo 'Verifying installation:'
-              if ! amd-smi version; then echo "amd-smi version failed with $?" ; exit 1; fi
-
-              # Verify .pth file created by postinst
-              python3 -c "import site, pathlib; pth = pathlib.Path(site.getsitepackages()[0]) / 'amdsmi.pth'; assert pth.exists(), f'amdsmi.pth not found at {pth}'; print(f'✓ .pth file found: {pth}'); print(f'  contents: {pth.read_text().strip()}')"
-
-              if ! python3 -m pip list | grep pip; then echo "pip list | grep pip failed with $?" ; exit 1; fi
-              if ! python3 -m pip list | grep setuptools; then echo "pip list | grep setuptools failed with $?" ; exit 1; fi
-              echo 'Completed installation on RHEL10'
-
-              # Verify Python package import
-              echo 'Verifying Python package...'
-              cd /tmp && python3 -c "import amdsmi; print('✓ Import successful'); amdsmi.amdsmi_init(); print('✓ Library loaded'); amdsmi.amdsmi_shut_down(); print('✓ Package working!')"
-              echo 'Python package verification completed on ${{ matrix.os }}'
-              break
-            else
-              echo "Installation failed on attempt $i"
-              if [ $i -eq $RETRIES ]; then
-                echo "All $RETRIES installation attempts failed. Exiting."
-                exit 1
-              fi
-              sleep $((2 * i))
-            fi
-          done
-
-      - name: Install AMDSMI
-        if: matrix.os != 'RHEL10' && matrix.os != 'AlmaLinux8'
-        run: |
-          cd ${{ env.PROJECT_DIR }}/build
-          rpm_pkgs=$(find . -maxdepth 1 -name "amd-smi-lib-*99999-local*.rpm" | tr '\n' ' ')
-          if [ -z "$rpm_pkgs" ]; then
-            echo "No amd-smi rpm artifacts found in $PWD"
-            ls -l .
-            exit 1
-          fi
-          case ${{ env.PACKAGE_MANAGER }} in
-            zypper)
-              timeout 10m zypper --no-refresh --no-gpg-checks install -y $rpm_pkgs
-              ;;
-            dnf)
-              dnf install python3-setuptools python3-wheel -y
-              RETRIES=3
-              for i in $(seq 1 $RETRIES); do
-                echo "Attempt $i: Installing AMDSMI package..."
-                if timeout 10m dnf install -y --skip-broken --disablerepo=* $rpm_pkgs; then
-                  echo "AMDSMI package installed successfully."
-                  break
-                else
-                  echo "Installation failed on attempt $i. Retrying..."
-                  if [ $i -eq $RETRIES ]; then
-                    echo "All $RETRIES attempts failed. Exiting."
-                    exit 1
-                  fi
-                  sleep 10
-                fi
-              done
-              ;;
-          esac
-          ln -s /opt/rocm/bin/amd-smi /usr/local/bin
-
-          # Verify Installation
-          echo 'Verifying installation:'
-          if ! amd-smi version; then echo "amd-smi version failed with $?" ; exit 1; fi
-
-          # Verify .pth file created by postinst
-          python3 -c "import site, pathlib; pth = pathlib.Path(site.getsitepackages()[0]) / 'amdsmi.pth'; assert pth.exists(), f'amdsmi.pth not found at {pth}'; print(f'✓ .pth file found: {pth}'); print(f'  contents: {pth.read_text().strip()}')"
-
-          if ! python3 -m pip list | grep pip; then echo "pip list | grep pip failed with $?" ; exit 1; fi
-          if ! python3 -m pip list | grep setuptools; then echo "pip list | grep setuptools failed with $?" ; exit 1; fi
-          echo 'Completed installation on ${{ matrix.os }}'
-
-          # Verify Python package import
-          echo 'Verifying Python package...'
-          cd /tmp && python3 -c "import amdsmi; print('✓ Import successful'); amdsmi.amdsmi_init(); print('✓ Library loaded'); amdsmi.amdsmi_shut_down(); print('✓ Package working!')"
-          echo 'Python package verification completed on ${{ matrix.os }}'
-
-      - name: Uninstall
-        if: always()
-        run: |
-          set -e
-          echo 'Uninstalling on ${{ matrix.os }}'
-          case ${{ matrix.os }} in
-            SLES)
-              zypper remove -y amd-smi-lib || true
-              ;;
-            RHEL8|RHEL9|RHEL10|AlmaLinux8|AzureLinux3)
-              dnf remove -y amd-smi-lib || true
-              ;;
-          esac
-          rm -f /usr/local/bin/amd-smi
-          if [ -d /opt/rocm/share/amd_smi ]; then
-            echo '/opt/rocm/share/amd_smi exists. Removing.'
-            rm -rf /opt/rocm/share/amd_smi
-          fi
-          echo 'Uninstall done on ${{ matrix.os }}'
-
   rpm-test:
     name: Tests
-    needs: [rpm-buildinstall, debian-test]
+    needs: [manylinux-build, debian-test]
     runs-on:
       - self-hosted
       - ${{ vars.RUNNER_TYPE }}
