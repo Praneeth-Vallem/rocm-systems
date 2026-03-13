@@ -25,9 +25,11 @@
 #include "lib/common/logging.hpp"
 
 #include <unistd.h>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <vector>
 
 namespace rocprofiler
 {
@@ -58,6 +60,30 @@ set_env(std::string_view, bool, int override = 0);
 template <typename Tp>
 int
 set_env(std::string_view, Tp, int override = 0);
+
+// additional environment and executable-discovery interfaces for ROCm/hipcc setup validation
+bool
+has_env(std::string_view);
+
+std::string
+find_executable(std::string_view exe_name);
+
+std::string
+find_executable(std::string_view exe_name, std::string_view search_path);
+
+std::string
+find_hipcc();
+
+std::string
+find_rocm_path();
+
+bool
+is_executable(std::string_view);
+
+bool
+validate_rocm_setup(std::string* hipcc_path = nullptr,
+                    std::string* rocm_path  = nullptr,
+                    std::string* error_msg  = nullptr);
 }  // namespace impl
 
 template <typename Tp>
@@ -81,6 +107,50 @@ inline auto
 set_env(std::string_view env_id, Tp&& value, int override = 0)
 {
     return impl::set_env(env_id, std::forward<Tp>(value), override);
+}
+
+inline bool
+has_env(std::string_view env_id)
+{
+    return impl::has_env(env_id);
+}
+
+inline std::string
+find_executable(std::string_view exe_name)
+{
+    return impl::find_executable(exe_name);
+}
+
+inline std::string
+find_executable(std::string_view exe_name, std::string_view search_path)
+{
+    return impl::find_executable(exe_name, search_path);
+}
+
+inline std::string
+find_hipcc()
+{
+    return impl::find_hipcc();
+}
+
+inline std::string
+find_rocm_path()
+{
+    return impl::find_rocm_path();
+}
+
+inline bool
+is_executable(std::string_view file_path)
+{
+    return impl::is_executable(file_path);
+}
+
+inline bool
+validate_rocm_setup(std::string* hipcc_path = nullptr,
+                    std::string* rocm_path  = nullptr,
+                    std::string* error_msg  = nullptr)
+{
+    return impl::validate_rocm_setup(hipcc_path, rocm_path, error_msg);
 }
 
 struct env_config
