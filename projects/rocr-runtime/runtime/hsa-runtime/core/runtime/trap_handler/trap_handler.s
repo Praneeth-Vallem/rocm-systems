@@ -283,17 +283,43 @@ trap_entry:
   // - Set bit 21 in TTMP13 to indicate a stochastic trap.
   // - Branch to the profile trap handler logic.
 
-  s_load_dwordx2                        ttmp[2:3], ttmp[14:15], 0 glc   // ttmp[14:15]=*host_trap_buffers
+  s_load_dwordx2                        ttmp[2:3], ttmp[14:15], 0   // ttmp[2:3] = host_trap_buffers base
 .if .amdgcn.gfx_generation_minor >= 4
+  // Multi-XCC: Use memory-based intermediate storage to avoid TTMP issues
+  s_load_dword                          ttmp4, ttmp[14:15], 0x10    // ttmp4 = per_xcc_size
+  s_getreg_b32                          ttmp5, hwreg(HW_REG_XCC_ID)     // ttmp5 = XCC_ID
   s_setreg_imm32_b32                    hwreg(HW_REG_TRAPSTS, SQ_WAVE_TRAPSTS_HOST_TRAP_SHIFT, 1), 0
   s_bitset0_b32                         ttmp13, TTMP13_PCS_IS_STOCHASTIC
   s_bitset1_b32                         ttmp13, TTMP13_PCS_IS_HOSTTRAP   // set bit 22 in TTMP13
+  s_waitcnt                             lgkmcnt(0)
+
+  // Check if host_trap_buffers is NULL (not configured for hosttrap)
+  s_cmp_eq_u64                          ttmp[2:3], 0
+  s_cbranch_scc1                        .not_s_trap
+
+  // Calculate offset using DIFFERENT registers to avoid corrupting TMA2 pointer (ttmp14:15)
+  s_mul_i32                             ttmp6, ttmp4, ttmp5             // ttmp6 = lo32(offset)
+  s_mul_hi_u32                          ttmp7, ttmp4, ttmp5             // ttmp7 = hi32(offset)
+
+  // Debug stores for XCC offset validation (disabled for performance):
+  // s_store_dword  ttmp5, ttmp[14:15], 0x18  // TMA2[0x18] = XCC_ID
+  // s_store_dword  ttmp6, ttmp[14:15], 0x1c  // TMA2[0x1c] = offset_lo
+  // s_waitcnt      lgkmcnt(0)
+
+  // Now copy to ttmp14:15 for final address calculation
+  s_mov_b32                             ttmp14, ttmp6
+  s_mov_b32                             ttmp15, ttmp7
+
+  // ttmp14:15 = base (ttmp2:3) + offset (ttmp14:15)
+  s_add_u32                             ttmp14, ttmp2, ttmp14
+  s_addc_u32                            ttmp15, ttmp3, ttmp15
+  s_branch                              .profile_trap_handlers_gfx9
 .else
   s_bitset1_b32                         ttmp11, TTMP11_PCS_IS_HOSTTRAP    // Set bit 22 in TTMP11
-.endif
   s_waitcnt                             lgkmcnt(0)
-  s_mov_b64                             ttmp[14:15], ttmp[2:3]          //now ttmp[14:15] = host_trap_buffers
-  s_branch                              .profile_trap_handlers_gfx9     // Off to the profile handlers
+  s_mov_b64                             ttmp[14:15], ttmp[2:3]          // ttmp14:15 = host_trap_buffers
+  s_branch                              .profile_trap_handlers_gfx9
+.endif
 .else
   // Ignore host traps.  They should be masked by the driver anyway.
   s_branch .not_s_trap
@@ -326,11 +352,34 @@ trap_entry:
 
   // Handle stochastic trap
   s_setreg_imm32_b32                    hwreg(HW_REG_TRAPSTS, SQ_WAVE_TRAPSTS_PERF_SNAPSHOT_SHIFT, 1), 0
-  s_load_dwordx2                        ttmp[2:3], ttmp[14:15], 0x8 glc // ttmp[14:15]=*stoch_trap_buf
+  s_load_dwordx2                        ttmp[2:3], ttmp[14:15], 0x8 // ttmp[2:3] = stochastic_trap_buffers base
+  // Multi-XCC: Use memory-based intermediate storage to avoid TTMP issues
+  s_load_dword                          ttmp4, ttmp[14:15], 0x10    // ttmp4 = per_xcc_size
+  s_getreg_b32                          ttmp5, hwreg(HW_REG_XCC_ID)     // ttmp5 = XCC_ID
   s_bitset0_b32                         ttmp13, TTMP13_PCS_IS_HOSTTRAP
   s_bitset1_b32                         ttmp13, TTMP13_PCS_IS_STOCHASTIC  // set bit 25 in TTMP13
   s_waitcnt                             lgkmcnt(0)
-  s_mov_b64                             ttmp[14:15], ttmp[2:3]
+
+  // Check if stochastic_trap_buffers is NULL (not configured for stochastic)
+  s_cmp_eq_u64                          ttmp[2:3], 0
+  s_cbranch_scc1                        .not_s_trap
+
+  // Calculate offset using DIFFERENT registers to avoid corrupting TMA2 pointer (ttmp14:15)
+  s_mul_i32                             ttmp6, ttmp4, ttmp5             // ttmp6 = lo32(offset)
+  s_mul_hi_u32                          ttmp7, ttmp4, ttmp5             // ttmp7 = hi32(offset)
+
+  // Debug stores for XCC offset validation (disabled for performance):
+  // s_store_dword  ttmp5, ttmp[14:15], 0x18  // TMA2[0x18] = XCC_ID
+  // s_store_dword  ttmp6, ttmp[14:15], 0x1c  // TMA2[0x1c] = offset_lo
+  // s_waitcnt      lgkmcnt(0)
+
+  // Now copy to ttmp14:15 for final address calculation
+  s_mov_b32                             ttmp14, ttmp6
+  s_mov_b32                             ttmp15, ttmp7
+
+  // ttmp14:15 = base (ttmp2:3) + offset (ttmp14:15)
+  s_add_u32                             ttmp14, ttmp2, ttmp14
+  s_addc_u32                            ttmp15, ttmp3, ttmp15
   s_branch                              .profile_trap_handlers_gfx9      // Off to the profile handlers
 .else
   s_branch                              .no_skip_debugtrap

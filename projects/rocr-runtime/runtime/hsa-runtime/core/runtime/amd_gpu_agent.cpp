@@ -2583,7 +2583,9 @@ void GpuAgent::SyncClocks() {
   assert(err == HSA_STATUS_SUCCESS && "hsaGetClockCounters error");
 }
 
-hsa_status_t GpuAgent::UpdateTrapHandlerWithPCS(pcs_sampling_data_t* pcs_hosttrap_buffers, pcs_sampling_data_t* pcs_stochastic_buffers) {
+hsa_status_t GpuAgent::UpdateTrapHandlerWithPCS(pcs_sampling_data_t* pcs_hosttrap_buffers,
+                                                pcs_sampling_data_t* pcs_stochastic_buffers,
+                                                uint32_t per_xcc_size) {
   // Assemble the trap handler source code.
   void* tma_addr = nullptr;
   uint64_t tma_size = 0;
@@ -2597,16 +2599,19 @@ hsa_status_t GpuAgent::UpdateTrapHandlerWithPCS(pcs_sampling_data_t* pcs_hosttra
   if (pcs_hosttrap_buffers || pcs_stochastic_buffers) {
     // ON non-large BAR systems, we cannot access device memory so we create a host copy
     // and then do a DmaCopy to device memory
-    void* tma_region_host = (uint64_t*)system_allocator()(2 * sizeof(uint64_t), 0x1000, 0);
+    pcs_tma2_t* tma_region_host = (pcs_tma2_t*)system_allocator()(sizeof(pcs_tma2_t), 0x1000, 0);
     if (tma_region_host == nullptr) return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
 
     MAKE_SCOPE_GUARD([&]() { system_deallocator()(tma_region_host); });
+    std::memset(tma_region_host, 0, sizeof(pcs_tma2_t));
 
-    ((uint64_t*)tma_region_host)[0] = (uint64_t)pcs_hosttrap_buffers;
-    ((uint64_t*)tma_region_host)[1] = (uint64_t)pcs_stochastic_buffers;
+    // Populate TMA2 structure
+    tma_region_host->host_trap_buffers = pcs_hosttrap_buffers;
+    tma_region_host->stochastic_trap_buffers = pcs_stochastic_buffers;
+    tma_region_host->per_xcc_size = per_xcc_size;
 
     if (!trap_handler_tma_region_) {
-      trap_handler_tma_region_ = (uint64_t*)finegrain_allocator()(2 * sizeof(uint64_t), 0);
+      trap_handler_tma_region_ = (uint64_t*)finegrain_allocator()(sizeof(pcs_tma2_t), 0);
       if (trap_handler_tma_region_ == nullptr) return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
 
       // NearestCpuAgent owns pool returned system_allocator()
@@ -2618,10 +2623,13 @@ hsa_status_t GpuAgent::UpdateTrapHandlerWithPCS(pcs_sampling_data_t* pcs_hosttra
     }
 
     /* On non-large BAR systems, we may not be able to access device memory, so do a DmaCopy */
-    if (DmaCopy(trap_handler_tma_region_, tma_region_host, 2 * sizeof(uint64_t)) != HSA_STATUS_SUCCESS)
+    if (DmaCopy(trap_handler_tma_region_, tma_region_host, sizeof(pcs_tma2_t)) !=
+        HSA_STATUS_SUCCESS)
       return HSA_STATUS_ERROR;
 
-    tma_size = 2 * sizeof(uint64_t);
+    InvalidateCodeCaches(trap_handler_tma_region_, sizeof(pcs_tma2_t));
+
+    tma_size = sizeof(pcs_tma2_t);
     tma_addr = trap_handler_tma_region_;
   } else if (trap_handler_tma_region_) {
     finegrain_deallocator()(trap_handler_tma_region_);
@@ -3020,45 +3028,75 @@ hsa_status_t GpuAgent::PcSamplingCreateFromId(HsaPcSamplingTraceId ioctlId,
                                                // sessions have different buffer
                                                // sizes.
 
-  // This is current amd_aql_queue->pm4_ib_size_b_
-  pcs_data->cmd_data_sz = 0x1000;  // 4KB
-  pcs_data->cmd_data = (uint32_t*)malloc(pcs_data->cmd_data_sz);
-  if (!pcs_data->cmd_data) return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
+  // Initialize per-XCC structures
+  pcs_data->num_xcc = properties_.NumXcc;
 
-  if (HSA::hsa_signal_create(1, 0, NULL, &pcs_data->exec_pm4_signal) != HSA_STATUS_SUCCESS)
-    return HSA_STATUS_ERROR;
+  pcs_data->threads = new os::Thread[pcs_data->num_xcc];
+  pcs_data->which_buffer = new uint32_t[pcs_data->num_xcc]();  // zero-initialized
+  pcs_data->old_val = new uint64_t*[pcs_data->num_xcc]();      // zero-initialized
+  pcs_data->cmd_data = new uint32_t*[pcs_data->num_xcc]();     // zero-initialized
+  pcs_data->cmd_data_sz = 0x1000;  // 4KB per thread
+  pcs_data->exec_pm4_signals = new hsa_signal_t[pcs_data->num_xcc]();  // zero-initialized
 
-  pcs_data->old_val = (uint64_t*)system_allocator()(sizeof(uint64_t), 0x1000, 0);
-  if (!pcs_data->old_val) return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
+  // Initialize per-XCC atomic offsets
+  pcs_data->host_write_offset = new std::atomic<uint64_t>[pcs_data->num_xcc];
+  pcs_data->host_read_offset = new std::atomic<uint64_t>[pcs_data->num_xcc];
+  for (uint32_t i = 0; i < pcs_data->num_xcc; i++) {
+    pcs_data->host_write_offset[i].store(0, std::memory_order_relaxed);
+    pcs_data->host_read_offset[i].store(0, std::memory_order_relaxed);
+  }
 
-  if (AMD::hsa_amd_agents_allow_access(1, &public_handle_, NULL, pcs_data->old_val))
-    return HSA_STATUS_ERROR;
-
-  // Local copy of pc sampling data - we cannot access device memory directly on non-large BAR
-  // systems
-  pcs_sampling_data_t* device_datahost =
-      (pcs_sampling_data_t*)system_allocator()(sizeof(pcs_sampling_data_t), 0x1000, 0);
-  if (!device_datahost) return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
-
-  MAKE_SCOPE_GUARD([&]() { system_deallocator()(device_datahost); });
-
-  memset(device_datahost, 0, sizeof(*device_datahost));
-
-  if (AMD::hsa_amd_agents_allow_access(1, &public_handle_, NULL, device_datahost) !=
-      HSA_STATUS_SUCCESS)
-    return HSA_STATUS_ERROR;
-
+  // Scope guard to clean up all per-XCC resources on error
   MAKE_NAMED_SCOPE_GUARD(freeResources, [&]() {
+    // Free per-XCC inner allocations
+    for (uint32_t i = 0; i < pcs_data->num_xcc; i++) {
+      if (pcs_data->cmd_data && pcs_data->cmd_data[i]) free(pcs_data->cmd_data[i]);
+      if (pcs_data->old_val && pcs_data->old_val[i]) system_deallocator()(pcs_data->old_val[i]);
+      if (pcs_data->exec_pm4_signals && pcs_data->exec_pm4_signals[i].handle)
+        HSA::hsa_signal_destroy(pcs_data->exec_pm4_signals[i]);
+    }
+    // Free per-XCC arrays
+    delete[] pcs_data->threads;
+    delete[] pcs_data->which_buffer;
+    delete[] pcs_data->old_val;
+    delete[] pcs_data->cmd_data;
+    delete[] pcs_data->exec_pm4_signals;
+    delete[] pcs_data->host_write_offset;
+    delete[] pcs_data->host_read_offset;
+    // Free device memory
+    if (pcs_data->device_data_base) {
+      finegrain_deallocator()(pcs_data->device_data_base);
+    }
     if (pcs_data->device_data) {
-      if (pcs_data->device_data->done_sig0.handle)
-        HSA::hsa_signal_destroy(pcs_data->device_data->done_sig0);
-      if (pcs_data->device_data->done_sig1.handle)
-        HSA::hsa_signal_destroy(pcs_data->device_data->done_sig1);
-
-      finegrain_deallocator()(pcs_data->device_data);
+      delete[] pcs_data->device_data;
+      pcs_data->device_data = nullptr;
+    }
+    if (pcs_data->done_signals) {
+      // Free per-XCC done signals
+      for (uint32_t i = 0; i < pcs_data->num_xcc * 2; i++) {
+        if (pcs_data->done_signals[i].handle) HSA::hsa_signal_destroy(pcs_data->done_signals[i]);
+      }
+      delete[] pcs_data->done_signals;
+      pcs_data->done_signals = nullptr;
     }
     if (pcs_data->host_buffer) system_deallocator()(pcs_data->host_buffer);
   });
+
+  // Allocate per-XCC resources
+  for (uint32_t xcc_id = 0; xcc_id < pcs_data->num_xcc; xcc_id++) {
+    pcs_data->cmd_data[xcc_id] = (uint32_t*)malloc(pcs_data->cmd_data_sz);
+    if (!pcs_data->cmd_data[xcc_id]) return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
+
+    if (HSA::hsa_signal_create(1, 0, NULL, &pcs_data->exec_pm4_signals[xcc_id]) !=
+        HSA_STATUS_SUCCESS)
+      return HSA_STATUS_ERROR;
+
+    pcs_data->old_val[xcc_id] = (uint64_t*)system_allocator()(sizeof(uint64_t), 0x1000, 0);
+    if (!pcs_data->old_val[xcc_id]) return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
+
+    if (AMD::hsa_amd_agents_allow_access(1, &public_handle_, NULL, pcs_data->old_val[xcc_id]))
+      return HSA_STATUS_ERROR;
+  }
 
   // Force creating of PC Sampling queue to trigger exception early in case we exceed max availble
   // CP queues on this agent
@@ -3084,104 +3122,144 @@ hsa_status_t GpuAgent::PcSamplingCreateFromId(HsaPcSamplingTraceId ioctlId,
       core::Runtime::runtime_singleton_->flag().pc_sampling_max_device_buffer_size();
 
   /*
-   * We use a double-buffer mechanism where there are 2 trap-buffers and 1 host-buffer
-   * Warning: This currently assumes that client latency is smaller than time to fill 1
-   * trap-buffer If latency is bigger, we have to increate host-buffer
+   * We use a per-XCC buffer mechanism where each XCC has its own device buffer
+   * and writes to its own section of the host buffer to reduce atomic contention.
    *
    * host-buffer must be >= client-buffer so that we can copy full size of client-buffer each
    * time. To avoid having to deal with wrap-arounds, host-buffer must be a multiple of
    * trap-buffers
-   *
-   * if client-buffer size is greater than 2x max_trap_buffer_size:
-   *    We are limited by max_trap_buffer_size.
-   *    trap-buffer = max-trap-buffer-size
-   *    host-buffer = 2*smallest size greater than client-buffer but multiple of 1 trap-buffer
-   * else:
-   *    We reduce the trap-buffers so that:
-   *    trap-buffer = half of user-buffer
-   *    host-buffer = 2*user-buffer
-   *
-   * TODO: We are currently using a temporary host-buffer so that we can increase host-buffer to
-   * factor in client latency. Using a direct-copy to the client buffer would be more efficient.
-   * Revisit this once we have empirical data of latency vs how long it takes to fill 1
-   * trap-buffer.
    */
 
   size_t trap_buffer_size = 0;
+  size_t per_xcc_host_buffer_size = 0;  // Per-XCC host buffer size
   if (session.buffer_size() > 2 * max_trap_buffer_size) {
     trap_buffer_size = max_trap_buffer_size;
-    pcs_data->host_buffer_size = 2 * AlignUp(session.buffer_size(), trap_buffer_size);
-    } else {
-      trap_buffer_size = session.buffer_size() / 2;
-      pcs_data->host_buffer_size = 2 * session.buffer_size();
-    }
+    per_xcc_host_buffer_size = 2 * AlignUp(session.buffer_size(), trap_buffer_size);
+  } else {
+    trap_buffer_size = session.buffer_size() / 2;
+    per_xcc_host_buffer_size = 2 * session.buffer_size();
+  }
 
-    pcs_data->host_buffer = (uint8_t*)system_allocator()(pcs_data->host_buffer_size, 0x1000, 0);
-    if (!pcs_data->host_buffer) return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
+  // Total host buffer = per-XCC size * num_xcc
+  pcs_data->host_buffer_size = per_xcc_host_buffer_size * pcs_data->num_xcc;
+  pcs_data->host_buffer = (uint8_t*)system_allocator()(pcs_data->host_buffer_size, 0x1000, 0);
+  if (!pcs_data->host_buffer) return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
 
-    if (AMD::hsa_amd_agents_allow_access(1, &public_handle_, NULL, pcs_data->host_buffer) !=
-        HSA_STATUS_SUCCESS)
-      return HSA_STATUS_ERROR;
+  if (AMD::hsa_amd_agents_allow_access(1, &public_handle_, NULL, pcs_data->host_buffer) !=
+      HSA_STATUS_SUCCESS)
+    return HSA_STATUS_ERROR;
 
-    device_datahost->buf_size = trap_buffer_size / session.sample_size();
+  // This cpuAgent is the owner of the system_allocator() pool
+  auto cpuAgent = GetNearestCpuAgent()->public_handle();
+  hsa_agent_t agents_to_grant[2] = {cpuAgent, public_handle_};
 
-    if (HSA::hsa_signal_create(1, 0, NULL, &device_datahost->done_sig0) != HSA_STATUS_SUCCESS)
+  // Allocate contiguous device memory for all XCCs with 256-byte alignment per XCC
+  size_t deviceAllocSize = AlignUp(sizeof(pcs_sampling_data_t) + (2 * trap_buffer_size), 256);
+  size_t totalDeviceAllocSize = deviceAllocSize * pcs_data->num_xcc;
+
+  // Allocate base device memory
+  pcs_data->device_data_base = (pcs_sampling_data_t*)finegrain_allocator()(totalDeviceAllocSize, 0);
+  if (pcs_data->device_data_base == nullptr) return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
+
+  // Grant access to both CPU and GPU
+  if (AMD::hsa_amd_agents_allow_access(2, agents_to_grant, NULL, pcs_data->device_data_base) !=
+      HSA_STATUS_SUCCESS)
+    return HSA_STATUS_ERROR;
+
+  // Set up per-XCC device_data pointers
+  pcs_data->device_data = new pcs_sampling_data_t*[pcs_data->num_xcc];
+  if (pcs_data->device_data == nullptr) return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
+
+  // Allocate done_signals array (2 signals per XCC)
+  pcs_data->done_signals = new hsa_signal_t[pcs_data->num_xcc * 2]();
+  if (pcs_data->done_signals == nullptr) return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
+
+  // Initialize each XCC's device data
+  for (uint32_t xcc_id = 0; xcc_id < pcs_data->num_xcc; xcc_id++) {
+    // Calculate pointer to this XCC's device data within the contiguous allocation
+    pcs_data->device_data[xcc_id] =
+        (pcs_sampling_data_t*)((uint8_t*)pcs_data->device_data_base + (xcc_id * deviceAllocSize));
+
+    // Local copy of pc sampling data - we cannot access device memory directly on non-large BAR
+    pcs_sampling_data_t* init_data =
+        (pcs_sampling_data_t*)system_allocator()(sizeof(pcs_sampling_data_t), 0x1000, 0);
+    if (!init_data) return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
+
+    MAKE_SCOPE_GUARD([&]() { system_deallocator()(init_data); });
+
+    memset(init_data, 0, sizeof(*init_data));
+
+    init_data->buf_size = trap_buffer_size / session.sample_size();
+
+    // Create signals for this XCC
+    if (HSA::hsa_signal_create(1, 0, NULL, &init_data->done_sig0) != HSA_STATUS_SUCCESS)
       return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
 
-    if (HSA::hsa_signal_create(1, 0, NULL, &device_datahost->done_sig1) != HSA_STATUS_SUCCESS)
+    if (HSA::hsa_signal_create(1, 0, NULL, &init_data->done_sig1) != HSA_STATUS_SUCCESS)
       return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
 
-    // TODO: Once we have things working and can measure
-    // latency after 2nd level trap handler decrements signals and set watermark accordingly
-    device_datahost->buf_watermark0 = 0.8 * device_datahost->buf_size;
-    device_datahost->buf_watermark1 = 0.8 * device_datahost->buf_size;
+    // Set watermarks
+    init_data->buf_watermark0 = 0.8 * init_data->buf_size;
+    init_data->buf_watermark1 = 0.8 * init_data->buf_size;
 
-    // Allocate device memory for 2nd level trap handler TMA
-    size_t deviceAllocSize = sizeof(pcs_sampling_data_t) + (2 * trap_buffer_size);
-    pcs_data->device_data = (pcs_sampling_data_t*)finegrain_allocator()(deviceAllocSize, 0);
-    if (pcs_data->device_data == nullptr) return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
+    // Cache signal handles for later use
+    pcs_data->done_signals[xcc_id * 2] = init_data->done_sig0;
+    pcs_data->done_signals[xcc_id * 2 + 1] = init_data->done_sig1;
 
-    // This cpuAgent is the owner of the system_allocator() pool
-    auto cpuAgent = GetNearestCpuAgent()->public_handle();
-    if (AMD::hsa_amd_agents_allow_access(1, &cpuAgent, NULL, pcs_data->device_data) != HSA_STATUS_SUCCESS)
-      return HSA_STATUS_ERROR;
-
-    if (DmaCopy(pcs_data->device_data, device_datahost, sizeof(*device_datahost)) !=
+    // Copy to device
+    if (DmaCopy(pcs_data->device_data[xcc_id], init_data, sizeof(*init_data)) !=
         HSA_STATUS_SUCCESS) {
-      debug_print("Failed to dmaCopy!\n");
+      debug_print("Failed to dmaCopy for XCC %u!\n", xcc_id);
       return HSA_STATUS_ERROR;
     }
 
+    // Verify the copy (debug) - only when debug_print is enabled
+    #ifdef DEBUG_PRINT
+    {
+      pcs_sampling_data_t* readback =
+          (pcs_sampling_data_t*)system_allocator()(sizeof(pcs_sampling_data_t), 0x1000, 0);
+      if (readback) {
+        MAKE_SCOPE_GUARD([&]() { system_deallocator()(readback); });
+        if (DmaCopy(readback, pcs_data->device_data[xcc_id], sizeof(pcs_sampling_data_t)) ==
+            HSA_STATUS_SUCCESS) {
+          debug_print("[ROCR] XCC %u buf_size readback: %u (expected %u)\n", xcc_id,
+                      readback->buf_size, init_data->buf_size);
+        }
+      }
+    }
+    #endif
+
+    // Zero the trap buffer memory
     uint8_t* device_buf_ptr =
-	reinterpret_cast<uint8_t*>(pcs_data->device_data) + sizeof(pcs_sampling_data_t);
+        reinterpret_cast<uint8_t*>(pcs_data->device_data[xcc_id]) + sizeof(pcs_sampling_data_t);
     size_t count_in_bytes = deviceAllocSize - sizeof(pcs_sampling_data_t);
     size_t count_in_dwords = count_in_bytes / sizeof(uint32_t);
-
-    if (DmaFill(device_buf_ptr, 0, count_in_dwords) !=
-	 HSA_STATUS_SUCCESS) {
-      debug_print("Failed to dmaFill!\n");
+    if (DmaFill(device_buf_ptr, 0, count_in_dwords) != HSA_STATUS_SUCCESS) {
+      debug_print("Failed to dmaFill for XCC %u!\n", xcc_id);
       return HSA_STATUS_ERROR;
     }
+  }
 
-    pcs_data->lost_sample_count = 0;
-    pcs_data->host_buffer_wrap_pos = 0;
-    pcs_data->host_write_ptr = pcs_data->host_buffer;
-    pcs_data->host_read_ptr = pcs_data->host_write_ptr;
+  pcs_data->lost_sample_count = 0;
+  pcs_data->host_buffer_wrap_pos = 0;
 
-    pcs_data->session = &session;
+  // Mark session as initialized
+  pcs_data->session = &session;
 
-    if (UpdateTrapHandlerWithPCS(
-            sampling_method == HSA_VEN_AMD_PCS_METHOD_HOSTTRAP_V1 ? pcs_data->device_data : nullptr,
-            sampling_method == HSA_VEN_AMD_PCS_METHOD_STOCHASTIC_V1
-                ? pcs_data->device_data
-                : nullptr) != HSA_STATUS_SUCCESS)
-      return HSA_STATUS_ERROR;
+  // pass base of contiguous device memory -trap handler adds XCC_ID * per_xcc_size
+  if (UpdateTrapHandlerWithPCS(
+          sampling_method == HSA_VEN_AMD_PCS_METHOD_HOSTTRAP_V1 ? pcs_data->device_data_base
+                                                                : nullptr,
+          sampling_method == HSA_VEN_AMD_PCS_METHOD_STOCHASTIC_V1 ? pcs_data->device_data_base
+                                                                  : nullptr,
+          deviceAllocSize) != HSA_STATUS_SUCCESS)
+    return HSA_STATUS_ERROR;
 
-    session.SetThunkId(ioctlId);
+  session.SetThunkId(ioctlId);
 
-    freeResources.Dismiss();
+  freeResources.Dismiss();
 
-    return HSA_STATUS_SUCCESS;
+  return HSA_STATUS_SUCCESS;
 }
 
 hsa_status_t GpuAgent::PcSamplingDestroy(pcs::PcsRuntime::PcSamplingSession& session) {
@@ -3204,27 +3282,60 @@ hsa_status_t GpuAgent::PcSamplingDestroy(pcs::PcsRuntime::PcSamplingSession& ses
   // Mark session as inactive
   pcs_data->session = nullptr;
 
-  free(pcs_data->cmd_data);
-  system_deallocator()(pcs_data->old_val);
-  HSA::hsa_signal_destroy(pcs_data->exec_pm4_signal);
-  HSA::hsa_signal_destroy(pcs_data->device_data->done_sig0);
-  HSA::hsa_signal_destroy(pcs_data->device_data->done_sig1);
-  finegrain_deallocator()(pcs_data->device_data);
+  // Free per-XCC resources
+  for (uint32_t xcc_id = 0; xcc_id < pcs_data->num_xcc; xcc_id++) {
+    if (pcs_data->cmd_data[xcc_id]) free(pcs_data->cmd_data[xcc_id]);
+    if (pcs_data->old_val[xcc_id]) system_deallocator()(pcs_data->old_val[xcc_id]);
+    if (pcs_data->exec_pm4_signals[xcc_id].handle)
+      HSA::hsa_signal_destroy(pcs_data->exec_pm4_signals[xcc_id]);
+
+    // Destroy per-XCC done signals
+    if (pcs_data->done_signals) {
+      if (pcs_data->done_signals[xcc_id * 2].handle)
+        HSA::hsa_signal_destroy(pcs_data->done_signals[xcc_id * 2]);
+      if (pcs_data->done_signals[xcc_id * 2 + 1].handle)
+        HSA::hsa_signal_destroy(pcs_data->done_signals[xcc_id * 2 + 1]);
+    }
+  }
+
+  // Free the contiguous device allocation (allocated with finegrain_allocator)
+  if (pcs_data->device_data_base) {
+    finegrain_deallocator()(pcs_data->device_data_base);
+    pcs_data->device_data_base = nullptr;
+  }
+
+  // Free per-XCC arrays
+  delete[] pcs_data->threads;
+  delete[] pcs_data->which_buffer;
+  delete[] pcs_data->cmd_data;
+  delete[] pcs_data->old_val;
+  delete[] pcs_data->exec_pm4_signals;
+  delete[] pcs_data->device_data;
+  delete[] pcs_data->done_signals;
+  delete[] pcs_data->host_write_offset;
+  delete[] pcs_data->host_read_offset;
+
   system_deallocator()(pcs_data->host_buffer);
 
   pcs_data->device_data = NULL;
+  pcs_data->done_signals = NULL;
   pcs_data->host_buffer = NULL;
+  pcs_data->threads = NULL;
+  pcs_data->which_buffer = NULL;
+  pcs_data->cmd_data = NULL;
+  pcs_data->old_val = NULL;
+  pcs_data->host_write_offset = NULL;
+  pcs_data->host_read_offset = NULL;
   pcs_data->session = NULL;
 
   // Update the trap handler to clear any associated device data
-  UpdateTrapHandlerWithPCS(nullptr, nullptr);
+  UpdateTrapHandlerWithPCS(nullptr, nullptr, 0);
 
   return (retKmt == HSAKMT_STATUS_SUCCESS) ? HSA_STATUS_SUCCESS : HSA_STATUS_ERROR;
 }
 
 hsa_status_t GpuAgent::PcSamplingStart(pcs::PcsRuntime::PcSamplingSession& session) {
   if (session.isActive()) return HSA_STATUS_SUCCESS;
-
 
   auto method = session.method();
 
@@ -3251,38 +3362,50 @@ hsa_status_t GpuAgent::PcSamplingStart(pcs::PcsRuntime::PcSamplingSession& sessi
   pcs_data->session = &session;
   pcs_data->session->start();
 
-  // Creating thread data
+  // Reset per-XCC offsets
+  for (uint32_t xcc_id = 0; xcc_id < pcs_data->num_xcc; xcc_id++) {
+    pcs_data->host_write_offset[xcc_id].store(0, std::memory_order_relaxed);
+    pcs_data->host_read_offset[xcc_id].store(0, std::memory_order_relaxed);
+  }
+
+  // Creating thread data for per-XCC threads
   struct ThreadData {
     GpuAgent* agent;
     pcs_data_t* pcs_data;
     const char* thread_name;
+    uint32_t xcc_id;
   };
 
-  auto* thread_data = new ThreadData{this, pcs_data, thread_name};
+  // Create one thread per XCC
+  for (uint32_t xcc_id = 0; xcc_id < pcs_data->num_xcc; xcc_id++) {
+    auto* thread_data = new ThreadData{this, pcs_data, thread_name, xcc_id};
 
-  // This thread will handle all PC Sampling sessions on this agent
-  pcs_data->thread = os::CreateThread(
-      [](void* arg) -> void {
-        auto* thread_data = static_cast<ThreadData*>(arg);
-        try {
-          GpuAgent* agent = thread_data->agent;
-          pcs_data_t* pcs_data = thread_data->pcs_data;
-          const char* thread_name = thread_data->thread_name;
+    // Each thread monitors one XCC's device buffers
+    pcs_data->threads[xcc_id] = os::CreateThread(
+        [](void* arg) -> void {
+          auto* thread_data = static_cast<ThreadData*>(arg);
+          try {
+            GpuAgent* agent = thread_data->agent;
+            pcs_data_t* pcs_data = thread_data->pcs_data;
+            const char* thread_name = thread_data->thread_name;
+            uint32_t xcc_id = thread_data->xcc_id;
 
-          agent->PcSamplingThread(*pcs_data, thread_name);
-        } catch (...) {
-	   fprintf(stdout, "Exception caught in PcSamplingThread. Exiting the thread!");
-        }
+            agent->PcSamplingThreadPerXCC(*pcs_data, xcc_id, thread_name);
+          } catch (...) {
+            fprintf(stdout,
+                    "Exception caught in PcSamplingThreadPerXCC (XCC %u). Exiting the thread!\n",
+                    thread_data->xcc_id);
+          }
+          delete thread_data;
+        },
+        thread_data);
 
-        delete thread_data;
-      },
-      thread_data);
-
-  if (!pcs_data->thread) {
-    // if thread creation failed
-    delete thread_data;
-    throw AMD::hsa_exception(HSA_STATUS_ERROR_OUT_OF_RESOURCES,
-                             "Failed to start PC Sampling thread.");
+    if (!pcs_data->threads[xcc_id]) {
+      // if thread creation failed
+      delete thread_data;
+      throw AMD::hsa_exception(HSA_STATUS_ERROR_OUT_OF_RESOURCES,
+                               "Failed to start PC Sampling thread.");
+    }
   }
 
   // Start the sampling session in the kernel driver
@@ -3292,9 +3415,13 @@ hsa_status_t GpuAgent::PcSamplingStart(pcs::PcsRuntime::PcSamplingSession& sessi
   debug_print("Failed to start PC sampling session with thunkId:%d\n", session.ThunkId());
   // Clean up if starting the session failed
   pcs_data->session->stop();
-  os::WaitForThread(pcs_data->thread);
-  os::CloseThread(pcs_data->thread);
-  pcs_data->thread = nullptr;
+  for (uint32_t xcc_id = 0; xcc_id < pcs_data->num_xcc; xcc_id++) {
+    if (pcs_data->threads[xcc_id]) {
+      os::WaitForThread(pcs_data->threads[xcc_id]);
+      os::CloseThread(pcs_data->threads[xcc_id]);
+      pcs_data->threads[xcc_id] = nullptr;
+    }
+  }
   pcs_data->session = nullptr;
 
   return HSA_STATUS_ERROR;
@@ -3305,11 +3432,6 @@ hsa_status_t GpuAgent::PcSamplingStop(pcs::PcsRuntime::PcSamplingSession& sessio
 
   // Stop the session
   session.stop();
-
-  // Stop PC sampling in the kernel driver
-  HSAKMT_STATUS retKmt = HSAKMT_CALL(hsaKmtPcSamplingStop(node_id(), session.ThunkId()));
-  if (retKmt != HSAKMT_STATUS_SUCCESS)
-    throw AMD::hsa_exception(HSA_STATUS_ERROR, "Failed to stop PC Sampling session.");
 
   // Determine the sampling method and corresponding data
   pcs_data_t* pcs_data = nullptr;
@@ -3323,16 +3445,149 @@ hsa_status_t GpuAgent::PcSamplingStop(pcs::PcsRuntime::PcSamplingSession& sessio
     // Unsupported sampling method
     return HSA_STATUS_ERROR_INVALID_ARGUMENT;
   }
-  // Wake up pcs_hosttrap_thread_ if it is waiting for data
-  HSA::hsa_signal_store_screlease(pcs_data->device_data->done_sig0, -1);
-  HSA::hsa_signal_store_screlease(pcs_data->device_data->done_sig1, -1);
 
-  // Wait for the thread to finish and clean up
-  os::WaitForThread(pcs_data->thread);
-  os::CloseThread(pcs_data->thread);
-  pcs_data->thread = nullptr;
+  // Wake up all per-XCC threads if they are waiting for data
+  for (uint32_t xcc_id = 0; xcc_id < pcs_data->num_xcc; xcc_id++) {
+    // Set done signals to -1 to wake up waiting threads
+    HSA::hsa_signal_store_screlease(pcs_data->done_signals[xcc_id * 2], -1);
+    HSA::hsa_signal_store_screlease(pcs_data->done_signals[xcc_id * 2 + 1], -1);
+  }
+
+  // Poke the signals again to ensure threads wake up
+  for (uint32_t xcc_id = 0; xcc_id < pcs_data->num_xcc; xcc_id++) {
+    // Touch signals to ensure wakeup
+    HSA::hsa_signal_add_screlease(pcs_data->done_signals[xcc_id * 2], 1);       // -1 + 1 = 0
+    HSA::hsa_signal_subtract_screlease(pcs_data->done_signals[xcc_id * 2], 1);  // 0 - 1 = -1
+    HSA::hsa_signal_add_screlease(pcs_data->done_signals[xcc_id * 2 + 1], 1);
+    HSA::hsa_signal_subtract_screlease(pcs_data->done_signals[xcc_id * 2 + 1], 1);
+  }
+
+  // Wait for all per-XCC threads to finish and clean up
+  for (uint32_t xcc_id = 0; xcc_id < pcs_data->num_xcc; xcc_id++) {
+    if (pcs_data->threads[xcc_id]) {
+      os::WaitForThread(pcs_data->threads[xcc_id]);
+      os::CloseThread(pcs_data->threads[xcc_id]);
+      pcs_data->threads[xcc_id] = nullptr;
+    }
+  }
+
   pcs_data->session = nullptr;
 
+  // Stop PC sampling in the kernel driver
+  HSAKMT_STATUS retKmt = HSAKMT_CALL(hsaKmtPcSamplingStop(node_id(), session.ThunkId()));
+
+  return (retKmt == HSAKMT_STATUS_SUCCESS) ? HSA_STATUS_SUCCESS : HSA_STATUS_ERROR;
+}
+
+// atomically swap this XCC's device buffers and DMA to shared host ring buffer
+hsa_status_t GpuAgent::PcSamplingFlushDeviceBuffersPerXCC(
+    pcs::PcsRuntime::PcSamplingSession& session, uint32_t xcc_id, bool exit_flush) {
+  pcs_data_t* pcs_data = nullptr;
+
+  if (session.method() == HSA_VEN_AMD_PCS_METHOD_HOSTTRAP_V1) {
+    pcs_data = &pcs_hosttrap_data_;
+  } else if (session.method() == HSA_VEN_AMD_PCS_METHOD_STOCHASTIC_V1) {
+    pcs_data = &pcs_stochastic_data_;
+  } else {
+    return HSA_STATUS_SUCCESS;
+  }
+
+  uint32_t next_buffer;
+  uint64_t reset_write_val;
+  uint32_t to_copy = 0;
+
+  uint64_t buf_write_val;
+  uint64_t buf_written_val[2];
+  size_t buf_offset;
+  uint8_t* buffer[2];
+  size_t buf_size;
+
+  uint32_t& which_buffer = pcs_data->which_buffer[xcc_id];
+  uint32_t* cmd_data = pcs_data->cmd_data[xcc_id];
+  size_t cmd_data_sz = pcs_data->cmd_data_sz;
+  uint64_t* old_val = pcs_data->old_val[xcc_id];
+  // Calculate per-XCC host buffer region
+  size_t per_xcc_host_buffer_size = pcs_data->host_buffer_size / pcs_data->num_xcc;
+  uint8_t* host_buffer_begin = pcs_data->host_buffer + (xcc_id * per_xcc_host_buffer_size);
+  size_t& host_buffer_size = per_xcc_host_buffer_size;  // Use per-XCC size
+  uint8_t* host_buffer_end = host_buffer_begin + host_buffer_size;
+
+  buf_write_val = reinterpret_cast<uint64_t>(&pcs_data->device_data[xcc_id]->buf_write_val);
+  buf_written_val[0] = reinterpret_cast<uint64_t>(&pcs_data->device_data[xcc_id]->buf_written_val0);
+  buf_written_val[1] = reinterpret_cast<uint64_t>(&pcs_data->device_data[xcc_id]->buf_written_val1);
+  buf_size = pcs_data->device_data[xcc_id]->buf_size;
+
+  // Buffer starts at offset 0x40 (after 64-byte header)
+  buf_offset = sizeof(pcs_sampling_data_t);
+
+  buffer[0] = reinterpret_cast<uint8_t*>(pcs_data->device_data[xcc_id]) + buf_offset;
+  buffer[1] = buffer[0] + buf_size * session.sample_size();
+
+  next_buffer = (which_buffer + 1) % 2;
+  reset_write_val = (uint64_t)next_buffer << 63;
+
+  // Use CPU atomic exchange: fine-grained memory is CPU-coherent and bypasses
+  // the per-XCC GL2 cache, giving us the value written by this XCC's trap handler.
+  *old_val = __atomic_exchange_n(
+      reinterpret_cast<uint64_t*>(&pcs_data->device_data[xcc_id]->buf_write_val), reset_write_val,
+      __ATOMIC_ACQ_REL);
+
+  *old_val &= (ULLONG_MAX >> 1);
+
+  if (*old_val > buf_size) {
+    // Buffer overflow
+    *old_val = buf_size;
+  }
+
+  to_copy = *old_val * session.sample_size();
+
+  // Per-XCC CAS: reserve slot in this XCC's isolated host buffer region
+  uint64_t write_offset = pcs_data->host_write_offset[xcc_id].load(std::memory_order_acquire);
+  uint64_t new_write_offset;
+
+  do {
+    new_write_offset = write_offset + to_copy;
+    // CAS loop to reserve slot in this XCC's buffer
+  } while (!pcs_data->host_write_offset[xcc_id].compare_exchange_weak(
+      write_offset, new_write_offset, std::memory_order_acq_rel, std::memory_order_acquire));
+
+  // Calculate actual buffer position with wrap-around
+  uint64_t buffer_offset = write_offset % host_buffer_size;
+  uint8_t* host_write_ptr = host_buffer_begin + buffer_offset;
+  size_t contiguous_space = host_buffer_size - buffer_offset;
+
+  // Spin-wait + memcpy: fine-grained memory reads bypass the per-XCC GL2 and
+  // are always coherent, unlike PM4 WAIT_REG_MEM/DMA which go through GL2.
+  if (to_copy > 0) {
+    volatile uint32_t* bwv_written = (which_buffer == 0)
+        ? reinterpret_cast<volatile uint32_t*>(&pcs_data->device_data[xcc_id]->buf_written_val0)
+        : reinterpret_cast<volatile uint32_t*>(&pcs_data->device_data[xcc_id]->buf_written_val1);
+    uint32_t expected_written = (uint32_t)*old_val;
+    // exit_flush: use short timeout (~100us) since trap handler is disabled;
+    // in-flight fill_sample must complete within that window.
+    // Normal flushes keep 500M iterations as a safety net.
+    const int SPX_MAX_SPIN = exit_flush ? 100000 : 500000000;
+    for (int spin_iter = 0; spin_iter < SPX_MAX_SPIN; spin_iter++) {
+      if (__atomic_load_n((uint32_t*)bwv_written, __ATOMIC_ACQUIRE) >= expected_written) {
+        break;
+      }
+      __builtin_ia32_pause();
+    }
+
+    // Copy into per-XCC host ring with wrap-safe split copy.
+    // The previous single memcpy could overrun host_buffer_end when
+    // buffer_offset + to_copy exceeded host_buffer_size.
+    size_t first_copy = std::min((size_t)to_copy, contiguous_space);
+    size_t second_copy = (size_t)to_copy - first_copy;
+    memcpy(host_write_ptr, buffer[which_buffer], first_copy);
+    if (second_copy > 0) {
+      memcpy(host_buffer_begin, buffer[which_buffer] + first_copy, second_copy);
+    }
+
+    __atomic_store_n((uint32_t*)bwv_written, 0U, __ATOMIC_RELEASE);
+  }
+
+  which_buffer = next_buffer;
   return HSA_STATUS_SUCCESS;
 }
 
@@ -3492,26 +3747,29 @@ hsa_status_t GpuAgent::PcSamplingFlushDeviceBuffers(
   uint8_t* buffer[2];
   size_t buf_size;
 
-  uint32_t& which_buffer = pcs_data->which_buffer;
-  uint32_t* cmd_data = pcs_data->cmd_data;
+  // For compatibility with single-XCC path, use xcc_id = 0
+  uint32_t xcc_id = 0;
+
+  uint32_t& which_buffer = pcs_data->which_buffer[xcc_id];
+  uint32_t* cmd_data = pcs_data->cmd_data[xcc_id];
   size_t cmd_data_sz = pcs_data->cmd_data_sz;
-  uint64_t* old_val = pcs_data->old_val;
-  hsa_signal_t& exec_pm4_signal = pcs_data->exec_pm4_signal;
+  uint64_t* old_val = pcs_data->old_val[xcc_id];
+  hsa_signal_t& exec_pm4_signal = pcs_data->exec_pm4_signals[xcc_id];
 
   uint8_t* host_buffer_begin = pcs_data->host_buffer;
   size_t& host_buffer_size = pcs_data->host_buffer_size;
-  uint8_t*& host_write_ptr = pcs_data->host_write_ptr;
   uint8_t* host_buffer_end = host_buffer_begin + host_buffer_size;
+  std::atomic<uint64_t>& host_write_offset = pcs_data->host_write_offset[xcc_id];
 
-  buf_write_val = reinterpret_cast<uint64_t>(&pcs_data->device_data->buf_write_val);
-  buf_written_val[0] = reinterpret_cast<uint64_t>(&pcs_data->device_data->buf_written_val0);
-  buf_written_val[1] = reinterpret_cast<uint64_t>(&pcs_data->device_data->buf_written_val1);
-  buf_size = pcs_data->device_data->buf_size;
+  buf_write_val = reinterpret_cast<uint64_t>(&pcs_data->device_data[xcc_id]->buf_write_val);
+  buf_written_val[0] = reinterpret_cast<uint64_t>(&pcs_data->device_data[xcc_id]->buf_written_val0);
+  buf_written_val[1] = reinterpret_cast<uint64_t>(&pcs_data->device_data[xcc_id]->buf_written_val1);
+  buf_size = pcs_data->device_data[xcc_id]->buf_size;
 
-  buf_offset =
-      offsetof(pcs_sampling_data_t, reserved1) + sizeof(((pcs_sampling_data_t*)0)->reserved1);
+  // Buffer starts at offset 0x40 (after 64-byte header)
+  buf_offset = sizeof(pcs_sampling_data_t);
 
-  buffer[0] = reinterpret_cast<uint8_t*>(pcs_data->device_data) + buf_offset;
+  buffer[0] = reinterpret_cast<uint8_t*>(pcs_data->device_data[xcc_id]) + buf_offset;
   buffer[1] = buffer[0] + buf_size * session.sample_size();
 
   next_buffer = (which_buffer + 1) % 2;
@@ -3579,13 +3837,6 @@ hsa_status_t GpuAgent::PcSamplingFlushDeviceBuffers(
 
   to_copy = *old_val * session.sample_size();
 
-  /* Make sure there is enough space after host_write_ptr */
-  if (host_write_ptr + to_copy >= host_buffer_end) {
-    // Need to wrap around
-    pcs_data->host_buffer_wrap_pos = host_write_ptr;
-    host_write_ptr = host_buffer_begin;
-  }
-
   i = 0;
   if (properties_.NumXcc > 1) i+= pred_exec_cmd_sz;
   memset(cmd_data, 0, cmd_data_sz);
@@ -3628,6 +3879,16 @@ hsa_status_t GpuAgent::PcSamplingFlushDeviceBuffers(
   }
 
   uint8_t* buffer_temp = buffer[which_buffer];
+  uint64_t current_write_offset = host_write_offset.load(std::memory_order_relaxed);
+  uint8_t* host_write_ptr = host_buffer_begin + current_write_offset;
+
+  /* Make sure there is enough space after host_write_ptr */
+  if (host_write_ptr + to_copy >= host_buffer_end) {
+    // Need to wrap around
+    pcs_data->host_buffer_wrap_pos = host_write_ptr;
+    host_write_ptr = host_buffer_begin;
+    current_write_offset = 0;
+  }
 
   for (copy_bytes = std::min(to_copy, (uint32_t)CP_DMA_DATA_TRANSFER_CNT_MAX); 0 < to_copy;
        to_copy -= copy_bytes) {
@@ -3649,7 +3910,11 @@ hsa_status_t GpuAgent::PcSamplingFlushDeviceBuffers(
     }
     buffer_temp += copy_bytes;
     host_write_ptr += copy_bytes;
+    current_write_offset += copy_bytes;
   }
+
+  // Update the atomic offset after all copies
+  host_write_offset.store(current_write_offset, std::memory_order_relaxed);
 
   /* WRITE_DATA, Reset buf_written_val */
   cmd_data[i++] = PM4_HDR(PM4_HDR_IT_OPCODE_WRITE_DATA, write_data_cmd_sz, isa_->GetMajorVersion());
@@ -3688,12 +3953,15 @@ void GpuAgent::PcSamplingThread(pcs_data_t& pcs_data, const char* thread_name) {
 
   try {
     pcs::PcsRuntime::PcSamplingSession& session = *pcs_data.session;
-    uint32_t& which_buffer = pcs_data.which_buffer;
+    // For non-per-XCC devices (num_xcc=1), use index [0]
+    uint32_t xcc_id = 0;
+    uint32_t& which_buffer = pcs_data.which_buffer[xcc_id];
 
     uint8_t* host_buffer_begin = pcs_data.host_buffer;
     uint8_t* host_buffer_end = pcs_data.host_buffer + pcs_data.host_buffer_size;
 
-    hsa_signal_t done_sig[] = {pcs_data.device_data->done_sig0, pcs_data.device_data->done_sig1};
+    hsa_signal_t done_sig[] = {pcs_data.device_data[xcc_id]->done_sig0,
+                               pcs_data.device_data[xcc_id]->done_sig1};
 
     while (pcs_data.session->isActive()) {
       // Wait for the signal to process the buffer
@@ -3714,60 +3982,73 @@ void GpuAgent::PcSamplingThread(pcs_data_t& pcs_data, const char* thread_name) {
       size_t bytes_before_wrap;
       size_t bytes_after_wrap;
 
-      assert(pcs_data.host_read_ptr >= host_buffer_begin && pcs_data.host_read_ptr < host_buffer_end);
-      assert(pcs_data.host_write_ptr >= host_buffer_begin && pcs_data.host_write_ptr < host_buffer_end);
-      assert(pcs_data.host_buffer_wrap_pos ? (pcs_data.host_read_ptr > pcs_data.host_write_ptr)
-                                           : (pcs_data.host_read_ptr <= pcs_data.host_write_ptr));
+      uint64_t host_read_offset = pcs_data.host_read_offset[xcc_id].load(std::memory_order_relaxed);
+      uint64_t host_write_offset =
+          pcs_data.host_write_offset[xcc_id].load(std::memory_order_relaxed);
+      uint8_t* host_read_ptr = host_buffer_begin + host_read_offset;
+      uint8_t* host_write_ptr = host_buffer_begin + host_write_offset;
+
+      assert(host_read_ptr >= host_buffer_begin && host_read_ptr < host_buffer_end);
+      assert(host_write_ptr >= host_buffer_begin && host_write_ptr < host_buffer_end);
+      assert(pcs_data.host_buffer_wrap_pos ? (host_read_ptr > host_write_ptr)
+                                           : (host_read_ptr <= host_write_ptr));
 
       if (pcs_data.host_buffer_wrap_pos) {
         assert(pcs_data.host_buffer_wrap_pos <= host_buffer_end &&
                pcs_data.host_buffer_wrap_pos > host_buffer_begin);
-        assert(pcs_data.host_read_ptr <= pcs_data.host_buffer_wrap_pos);
+        assert(host_read_ptr <= pcs_data.host_buffer_wrap_pos);
 
         // Wrapped around
-        bytes_before_wrap = pcs_data.host_buffer_wrap_pos - pcs_data.host_read_ptr;
-        bytes_after_wrap = pcs_data.host_write_ptr - host_buffer_begin;
+        bytes_before_wrap = pcs_data.host_buffer_wrap_pos - host_read_ptr;
+        bytes_after_wrap = host_write_ptr - host_buffer_begin;
 
         while (bytes_before_wrap >= session.buffer_size()) {
-          session.HandleSampleData(pcs_data.host_read_ptr, session.buffer_size(), nullptr, 0,
+          session.HandleSampleData(host_read_ptr, session.buffer_size(), nullptr, 0,
                                    pcs_data.lost_sample_count);
-          pcs_data.host_read_ptr += session.buffer_size();
-          bytes_before_wrap = pcs_data.host_buffer_wrap_pos - pcs_data.host_read_ptr;
+          host_read_ptr += session.buffer_size();
+          host_read_offset += session.buffer_size();
+          bytes_before_wrap = pcs_data.host_buffer_wrap_pos - host_read_ptr;
           pcs_data.lost_sample_count = 0;
         }
 
         if (bytes_before_wrap + bytes_after_wrap >= session.buffer_size()) {
-          session.HandleSampleData(pcs_data.host_read_ptr, bytes_before_wrap, host_buffer_begin,
+          session.HandleSampleData(host_read_ptr, bytes_before_wrap, host_buffer_begin,
                                    (session.buffer_size() - bytes_before_wrap), 0);
-          pcs_data.host_read_ptr = host_buffer_begin + (session.buffer_size() - bytes_before_wrap);
+          host_read_ptr = host_buffer_begin + (session.buffer_size() - bytes_before_wrap);
+          host_read_offset = host_read_ptr - host_buffer_begin;
           bytes_before_wrap = 0;
           pcs_data.host_buffer_wrap_pos = 0;
-          bytes_after_wrap = pcs_data.host_write_ptr - pcs_data.host_read_ptr;
+          bytes_after_wrap = host_write_ptr - host_read_ptr;
           pcs_data.lost_sample_count = 0;
         }
 
         while (bytes_after_wrap >= session.buffer_size()) {
-          session.HandleSampleData(pcs_data.host_read_ptr, session.buffer_size(), nullptr, 0,
+          session.HandleSampleData(host_read_ptr, session.buffer_size(), nullptr, 0,
                                    pcs_data.lost_sample_count);
-          pcs_data.host_read_ptr += session.buffer_size();
+          host_read_ptr += session.buffer_size();
+          host_read_offset += session.buffer_size();
           bytes_before_wrap = 0;
-          bytes_after_wrap = pcs_data.host_write_ptr - pcs_data.host_read_ptr;
+          bytes_after_wrap = host_write_ptr - host_read_ptr;
           pcs_data.lost_sample_count = 0;
         }
       } else {
         // Handle non-wrapped buffer
-        bytes_before_wrap = pcs_data.host_write_ptr - pcs_data.host_read_ptr;
+        bytes_before_wrap = host_write_ptr - host_read_ptr;
 
         while (bytes_before_wrap >= session.buffer_size()) {
-          assert(pcs_data.host_read_ptr >= host_buffer_begin &&
-                 pcs_data.host_read_ptr + session.buffer_size() <= host_buffer_end);
-          session.HandleSampleData(pcs_data.host_read_ptr, session.buffer_size(), nullptr, 0,
+          assert(host_read_ptr >= host_buffer_begin &&
+                 host_read_ptr + session.buffer_size() <= host_buffer_end);
+          session.HandleSampleData(host_read_ptr, session.buffer_size(), nullptr, 0,
                                    pcs_data.lost_sample_count);
-          pcs_data.host_read_ptr += session.buffer_size();
-          bytes_before_wrap = pcs_data.host_write_ptr - pcs_data.host_read_ptr;
+          host_read_ptr += session.buffer_size();
+          host_read_offset += session.buffer_size();
+          bytes_before_wrap = host_write_ptr - host_read_ptr;
           pcs_data.lost_sample_count = 0;
         }
       }
+
+      // Update the atomic offset
+      pcs_data.host_read_offset[xcc_id].store(host_read_offset, std::memory_order_relaxed);
     }
 thread_exit:
   debug_print("%s::Exiting\n", thread_name);
@@ -3776,6 +4057,123 @@ thread_exit:
 } catch (...) {
   debug_print("Unknown exception in %s\n", thread_name);
 }
+}
+
+// Per-XCC PC sampling thread - monitors device buffers for one XCC
+void GpuAgent::PcSamplingThreadPerXCC(pcs_data_t& pcs_data, uint32_t xcc_id,
+                                      const char* thread_name) {
+  try {
+    pcs::PcsRuntime::PcSamplingSession& session = *pcs_data.session;
+    uint32_t& which_buffer = pcs_data.which_buffer[xcc_id];
+
+    // Multi-XCC: Calculate per-XCC host buffer region
+    size_t per_xcc_host_buffer_size = pcs_data.host_buffer_size / pcs_data.num_xcc;
+    uint8_t* host_buffer_begin = pcs_data.host_buffer + (xcc_id * per_xcc_host_buffer_size);
+
+    // Use cached signals (device_data is in VRAM, not CPU-accessible)
+    hsa_signal_t done_sig[] = {pcs_data.done_signals[xcc_id * 2],
+                               pcs_data.done_signals[xcc_id * 2 + 1]};
+
+    bool exit_requested = false;
+    uint32_t timeout_count = 0;
+    while (!exit_requested) {
+      // Wait for the signal to process the buffer (with timeout to prevent deadlock)
+      hsa_signal_value_t val;
+      int wait_iterations = 0;
+      do {
+        // Wait with 1-second timeout to periodically check for exit
+        val = HSA::hsa_signal_wait_scacquire(done_sig[which_buffer], HSA_SIGNAL_CONDITION_LT, 1,
+                                             1000000000ULL, HSA_WAIT_STATE_BLOCKED);
+
+        wait_iterations++;
+
+        if (val == -1) {
+          exit_requested = true;
+          break;  // Exit wait loop, perform final flush below
+        }
+        if (val == 0) {
+          break;
+        }
+
+        // If we've timed out many times, just poll the buffer
+        if (wait_iterations >= 5) {
+          timeout_count++;
+          break;  // Exit wait and check buffer anyway
+        }
+      } while (true);
+
+      if (!exit_requested && val == 0) {
+        HSA::hsa_signal_store_screlease(done_sig[which_buffer], 1);
+      }
+
+      // At exit, pass exit_flush=true to limit the spin to ~100us instead of
+      // 500M iterations. Any in-flight fill_sample writes complete within that window.
+      if (PcSamplingFlushDeviceBuffersPerXCC(session, xcc_id, exit_requested) !=
+          HSA_STATUS_SUCCESS) {
+        goto thread_exit;
+      }
+
+      // Per-XCC processing: read samples from this XCC's isolated host buffer region
+      std::lock_guard<std::mutex> lock(pcs_data.host_buffer_mutex);
+
+      uint64_t read_offset = pcs_data.host_read_offset[xcc_id].load(std::memory_order_acquire);
+      uint64_t write_offset = pcs_data.host_write_offset[xcc_id].load(std::memory_order_acquire);
+
+      // Calculate trap handler buffer size
+      size_t trap_buffer_size = pcs_data.device_data[xcc_id]->buf_size * session.sample_size();
+
+      // Process samples in trap-buffer-sized chunks
+      while (read_offset + trap_buffer_size <= write_offset) {
+        uint64_t buffer_offset = read_offset % per_xcc_host_buffer_size;
+        uint8_t* read_ptr = host_buffer_begin + buffer_offset;
+
+        // Handle wrap-around within this XCC's buffer region
+        if (buffer_offset + trap_buffer_size <= per_xcc_host_buffer_size) {
+          session.HandleSampleData(read_ptr, trap_buffer_size, nullptr, 0, 0);
+        } else {
+          size_t bytes_before_wrap = per_xcc_host_buffer_size - buffer_offset;
+          size_t bytes_after_wrap = trap_buffer_size - bytes_before_wrap;
+          session.HandleSampleData(read_ptr, bytes_before_wrap, host_buffer_begin, bytes_after_wrap,
+                                   0);
+        }
+
+        read_offset += trap_buffer_size;
+        pcs_data.host_read_offset[xcc_id].store(read_offset, std::memory_order_release);
+      }
+
+      // Handle any remaining partial samples
+      uint64_t remaining_bytes = write_offset - read_offset;
+      if (remaining_bytes > 0 && remaining_bytes >= session.sample_size()) {
+        // Ensure we have at least one complete sample
+        size_t samples_to_process = remaining_bytes / session.sample_size();
+        size_t bytes_to_process = samples_to_process * session.sample_size();
+
+        uint64_t buffer_offset = read_offset % per_xcc_host_buffer_size;
+        uint8_t* read_ptr = host_buffer_begin + buffer_offset;
+
+        if (buffer_offset + bytes_to_process <= per_xcc_host_buffer_size) {
+          session.HandleSampleData(read_ptr, bytes_to_process, nullptr, 0, 0);
+        } else {
+          size_t bytes_before_wrap = per_xcc_host_buffer_size - buffer_offset;
+          size_t bytes_after_wrap = bytes_to_process - bytes_before_wrap;
+          session.HandleSampleData(read_ptr, bytes_before_wrap, host_buffer_begin, bytes_after_wrap,
+                                   0);
+        }
+
+        read_offset += bytes_to_process;
+        pcs_data.host_read_offset[xcc_id].store(read_offset, std::memory_order_release);
+      }
+
+      // After final flush + sample drain, exit the drain loop.
+      if (exit_requested) break;
+    }
+  thread_exit:
+    debug_print("%s (XCC %u)::Exiting\n", thread_name, xcc_id);
+  } catch (const std::exception& e) {
+    debug_print("Exception in %s (XCC %u): %s\n", thread_name, xcc_id, e.what());
+  } catch (...) {
+    debug_print("Unknown exception in %s (XCC %u)\n", thread_name, xcc_id);
+  }
 }
 
 hsa_status_t GpuAgent::PcSamplingFlush(pcs::PcsRuntime::PcSamplingSession& session) {
@@ -3789,6 +4187,11 @@ hsa_status_t GpuAgent::PcSamplingFlush(pcs::PcsRuntime::PcSamplingSession& sessi
     return HSA_STATUS_SUCCESS;  // Unsupported sampling method
   }
 
+  // Check if PC sampling session has already been stopped
+  if (pcs_data->session == nullptr) {
+    return HSA_STATUS_SUCCESS;  // Session already stopped, nothing to flush
+  }
+
   uint8_t* host_buffer_begin = pcs_data->host_buffer;
   uint8_t* host_buffer_end = pcs_data->host_buffer + pcs_data->host_buffer_size;
 
@@ -3799,59 +4202,73 @@ hsa_status_t GpuAgent::PcSamplingFlush(pcs::PcsRuntime::PcSamplingSession& sessi
   // Flush device buffers
   if (PcSamplingFlushDeviceBuffers(session) != HSA_STATUS_SUCCESS) return HSA_STATUS_ERROR;
 
-  assert(pcs_data->host_read_ptr >= host_buffer_begin && pcs_data->host_read_ptr < host_buffer_end);
-  assert(pcs_data->host_write_ptr >= host_buffer_begin &&
-         pcs_data->host_write_ptr < host_buffer_end);
-  assert(pcs_data->host_buffer_wrap_pos ? (pcs_data->host_read_ptr > pcs_data->host_write_ptr)
-                                        : (pcs_data->host_read_ptr <= pcs_data->host_write_ptr));
+  // For single-XCC devices or XCC 0
+  uint32_t xcc_id = 0;
+  uint64_t host_read_offset = pcs_data->host_read_offset[xcc_id].load(std::memory_order_relaxed);
+  uint64_t host_write_offset = pcs_data->host_write_offset[xcc_id].load(std::memory_order_relaxed);
+  uint8_t* host_read_ptr = host_buffer_begin + host_read_offset;
+  uint8_t* host_write_ptr = host_buffer_begin + host_write_offset;
+
+  assert(host_read_ptr >= host_buffer_begin && host_read_ptr < host_buffer_end);
+  assert(host_write_ptr >= host_buffer_begin && host_write_ptr < host_buffer_end);
+  assert(pcs_data->host_buffer_wrap_pos ? (host_read_ptr > host_write_ptr)
+                                        : (host_read_ptr <= host_write_ptr));
 
   if (pcs_data->host_buffer_wrap_pos) {
     assert(pcs_data->host_buffer_wrap_pos <= host_buffer_end &&
            pcs_data->host_buffer_wrap_pos > host_buffer_begin);
-    assert(pcs_data->host_read_ptr <= pcs_data->host_buffer_wrap_pos);
+    assert(host_read_ptr <= pcs_data->host_buffer_wrap_pos);
 
     // Handle wrapped-around buffer
-    bytes_before_wrap = pcs_data->host_buffer_wrap_pos - pcs_data->host_read_ptr;
-    bytes_after_wrap = pcs_data->host_write_ptr - host_buffer_begin;
+    bytes_before_wrap = pcs_data->host_buffer_wrap_pos - host_read_ptr;
+    bytes_after_wrap = host_write_ptr - host_buffer_begin;
 
     while (bytes_before_wrap > 0) {
       size_t bytes_to_copy = std::min(bytes_before_wrap, session.buffer_size());
 
-      session.HandleSampleData(pcs_data->host_read_ptr, bytes_to_copy, nullptr, 0,
+      session.HandleSampleData(host_read_ptr, bytes_to_copy, nullptr, 0,
                                pcs_data->lost_sample_count);
-      pcs_data->host_read_ptr += bytes_to_copy;
-      bytes_before_wrap = pcs_data->host_buffer_wrap_pos - pcs_data->host_read_ptr;
+      host_read_ptr += bytes_to_copy;
+      host_read_offset += bytes_to_copy;
+      bytes_before_wrap = pcs_data->host_buffer_wrap_pos - host_read_ptr;
       pcs_data->lost_sample_count = 0;
     }
 
-    assert(pcs_data->host_read_ptr == pcs_data->host_buffer_wrap_pos);
+    assert(host_read_ptr == pcs_data->host_buffer_wrap_pos);
     pcs_data->host_buffer_wrap_pos = 0;
-    pcs_data->host_read_ptr = host_buffer_begin;
+    host_read_ptr = host_buffer_begin;
+    host_read_offset = 0;
 
     while (bytes_after_wrap > 0) {
       size_t bytes_to_copy = std::min(bytes_after_wrap, session.buffer_size());
 
-      session.HandleSampleData(pcs_data->host_read_ptr, bytes_to_copy, nullptr, 0,
+      session.HandleSampleData(host_read_ptr, bytes_to_copy, nullptr, 0,
                                pcs_data->lost_sample_count);
-      pcs_data->host_read_ptr += bytes_to_copy;
-      bytes_after_wrap = pcs_data->host_write_ptr - pcs_data->host_read_ptr;
+      host_read_ptr += bytes_to_copy;
+      host_read_offset += bytes_to_copy;
+      bytes_after_wrap = host_write_ptr - host_read_ptr;
       pcs_data->lost_sample_count = 0;
     }
   } else {
-    bytes_before_wrap = pcs_data->host_write_ptr - pcs_data->host_read_ptr;
+    bytes_before_wrap = host_write_ptr - host_read_ptr;
 
     while (bytes_before_wrap > 0) {
       size_t bytes_to_copy = std::min(bytes_before_wrap, session.buffer_size());
-      assert(pcs_data->host_read_ptr >= host_buffer_begin &&
-             pcs_data->host_read_ptr + bytes_to_copy <= host_buffer_end);
+      assert(host_read_ptr >= host_buffer_begin &&
+             host_read_ptr + bytes_to_copy <= host_buffer_end);
 
-      session.HandleSampleData(pcs_data->host_read_ptr, bytes_to_copy, nullptr, 0,
+      session.HandleSampleData(host_read_ptr, bytes_to_copy, nullptr, 0,
                                pcs_data->lost_sample_count);
-      pcs_data->host_read_ptr += bytes_to_copy;
-      bytes_before_wrap = pcs_data->host_write_ptr - pcs_data->host_read_ptr;
+      host_read_ptr += bytes_to_copy;
+      host_read_offset += bytes_to_copy;
+      bytes_before_wrap = host_write_ptr - host_read_ptr;
       pcs_data->lost_sample_count = 0;
     }
   }
+
+  // Update the atomic offset
+  pcs_data->host_read_offset[xcc_id].store(host_read_offset, std::memory_order_relaxed);
+
   return HSA_STATUS_SUCCESS;
 }
 

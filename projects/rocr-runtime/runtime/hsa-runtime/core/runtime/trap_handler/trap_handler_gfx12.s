@@ -230,19 +230,24 @@
 
 .check_hosttrap:
 
-  // ttmp[14:15] points to TMA.
-  // Available: ttmp[2:3], ttmp[4:5], ttmp6, ttmp[10:11]
+  // ttmp[14:15] points to TMA2.
+  // Scratch registers: ttmp[2:3], ttmp[4:5], ttmp10, ttmp13
   s_getreg_b32      ttmp2, hwreg(HW_REG_EXCP_FLAG_PRIV)     // On gfx12, EXCP_FLAG_PRIV.b7
-  s_bitcmp1_b32     ttmp2, SQ_WAVE_EXCP_FLAG_PRIV_HT_SHIFT
-  s_cbranch_scc0    .check_stochastic
+  s_bitcmp1_b32     ttmp2, SQ_WAVE_EXCP_FLAG_PRIV_HT_SHIFT  // Test Host Trap bit.
+  s_cbranch_scc0    .check_stochastic                       // If not HT, check for stochastic sampling
 
   // It's a Host Trap event.
-  s_load_b64        ttmp[14:15], ttmp[14:15], 0x0, scope:SCOPE_CU         // ttmp[14:15]=*host_trap_buffers
-  s_bitset1_b32     ttmp13, TTMP13_HT_FLAG_BIT              // set bit 22 in TTMP13
+  // Load host_trap_buffers base into ttmp[2:3] (NOT ttmp14:15, need TMA2 ptr for per_xcc_size)
+  s_load_b64        ttmp[2:3], ttmp[14:15], 0x0, scope:SCOPE_CU  // ttmp[2:3] = host_trap_buffers base
+  s_bitset1_b32     ttmp13, TTMP13_HT_FLAG_BIT               // set bit 22 in TTMP13
 
   // Clear the Host Trap flag in the hardware register to acknowledge the event
   s_setreg_imm32_b32 hwreg(HW_REG_EXCP_FLAG_PRIV, SQ_WAVE_EXCP_FLAG_PRIV_HT_SHIFT,1), 0
-  s_wait_kmcnt      0                                       // Ensure previous load is complete.
+
+  // GFX12.0 (single XCC): Simple pointer copy
+  s_wait_kmcnt      0                                        // Wait for s_load_b64
+  s_mov_b32         ttmp14, ttmp2
+  s_mov_b32         ttmp15, ttmp3
   s_branch          .profile_trap_handlers
 
 .check_stochastic:
@@ -251,12 +256,17 @@
 
   s_cbranch_scc0    .handle_sw_trap                         // If not Stochastic, continue to check trap ID
 
-  s_load_b64        ttmp[14:15], ttmp[14:15], 0x8, scope:SCOPE_CU  // ttmp[14:15]=*stoch_trap_buf
-  s_wait_kmcnt      0
+  // Load stochastic_trap_buffers base into ttmp[2:3] (preserve TMA2 ptr in ttmp14:15)
+  s_load_b64        ttmp[2:3], ttmp[14:15], 0x8, scope:SCOPE_CU  // ttmp[2:3] = stochastic_trap_buffers base
 
-  s_bitset1_b32     ttmp13, TTMP13_STOCH_FLAG_BIT           // set bit 21 in TTMP13
+  s_bitset1_b32     ttmp13, TTMP13_STOCH_FLAG_BIT            // set bit 21 in TTMP13
 
   s_setreg_imm32_b32 hwreg(HW_REG_EXCP_FLAG_PRIV, SQ_WAVE_EXCP_FLAG_PRIV_PERF_SNAPSHOT,1), 0 // Clear the perf_snapshot flag
+
+  // GFX12.0 (single XCC): Simple pointer copy
+  s_wait_kmcnt      0                                        // Wait for s_load_b64
+  s_mov_b32         ttmp14, ttmp2
+  s_mov_b32         ttmp15, ttmp3
   s_branch          .profile_trap_handlers
 
 .handle_sw_trap:
