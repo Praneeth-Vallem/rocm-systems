@@ -540,9 +540,7 @@ main(int argc, char** argv)
         size_t _num_metrics = 0;
         try
         {
-            // call to rocm_events() will add choices to ROCPROFSYS_ROCM_EVENTS setting
-            // so always perform this call even if list of HW counters is not requested
-            _num_metrics = rocprofsys::rocm::rocm_events().size();
+            _num_metrics = rocprofsys::avail::query_gpu_hw_counters().size();
         } catch(std::runtime_error& _e)
         {
             verbprintf(0, "Retrieving the GPU HW counters failed: %s", _e.what());
