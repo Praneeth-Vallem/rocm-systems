@@ -78,6 +78,7 @@
 #include "core/util/os.h"
 #include "core/util/utils.h"
 #include "core/util/mpsc_queue.hpp"
+#include "core/util/bounded_mpmc_queue.h"
 
 #include "core/inc/amd_loader_context.hpp"
 #include "core/inc/amd_hsa_code.hpp"
@@ -670,9 +671,11 @@ class Runtime {
       std::vector<std::pair<void*, size_t>> block_list_;
       size_t block_size_;
   };
-  // New concurrent events structure using lock-free queue
+  // Concurrent events structure with selectable queue backend.
+  // Default: bounded ring-buffer (no per-enqueue allocation).
+  // Set HSA_ASYNC_QUEUE_LEGACY=1 to fall back to unbounded MPSC + mutex pool.
   struct ConcurrentAsyncEvents {
-    ConcurrentAsyncEvents() {}
+    ConcurrentAsyncEvents();
 
     void PushBack(hsa_signal_t signal, hsa_signal_condition_t cond,
                   hsa_signal_value_t value, hsa_amd_signal_handler handler, void* arg);
@@ -681,7 +684,7 @@ class Runtime {
 
     size_t Size();
 
-    bool empty() { return event_queue_.empty(); }
+    bool empty();
 
     //! Get all events for processing
     bool GetAllEvents(std::vector<AsyncEventItem>& all_events);
@@ -692,7 +695,11 @@ class Runtime {
     //! Add events back to queue (for events that need to be kept)
     void AddEventsBack(const std::vector<AsyncEventItem>& events);
   private:
-    //AsyncEventItem Queue
+    static constexpr size_t kBoundedQueueCapacity = 2048;
+    bool use_bounded_queue_;
+    // Bounded ring-buffer (default)
+    std::unique_ptr<::rocr::mpmc::BoundedQueue<AsyncEventItem>> bounded_queue_;
+    // Legacy: unbounded MPSC linked-list + mutex pool
     ::rocr::MPSCQueue<AsyncEventItem*> event_queue_;
     AsyncEventsPool asyncEventPool_;
   };

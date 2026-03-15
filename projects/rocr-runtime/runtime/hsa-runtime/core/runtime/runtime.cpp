@@ -2009,18 +2009,38 @@ void Runtime::AsyncEventsPool::free(AsyncEventItem* ptr) {
   }
   free_list_.push_back(ptr);
 }
+Runtime::ConcurrentAsyncEvents::ConcurrentAsyncEvents()
+    : use_bounded_queue_(true) {
+  std::string var = os::GetEnvVar("HSA_ASYNC_QUEUE_LEGACY");
+  if (!var.empty() && atoi(var.c_str()) == 1) {
+    use_bounded_queue_ = false;
+  }
+
+  if (use_bounded_queue_) {
+    bounded_queue_ = std::make_unique<::rocr::mpmc::BoundedQueue<AsyncEventItem>>(
+        kBoundedQueueCapacity);
+  }
+}
+
 void Runtime::ConcurrentAsyncEvents::PushBack(hsa_signal_t signal,
                                              hsa_signal_condition_t cond,
                                              hsa_signal_value_t value,
                                              hsa_amd_signal_handler handler, void* arg) {
-  // Allocate memory for the new event item
+  if (use_bounded_queue_) {
+    bounded_queue_->emplace(signal, cond, value, handler, arg);
+    return;
+  }
   AsyncEventItem* item = asyncEventPool_.alloc();
   item->init(signal, cond, value, handler, arg);
   event_queue_.enqueue(item);
 }
 
 void Runtime::ConcurrentAsyncEvents::Clear() {
-  // Dequeue all items to clear the queue
+  if (use_bounded_queue_) {
+    AsyncEventItem tmp;
+    while (bounded_queue_->try_pop(tmp)) {}
+    return;
+  }
   while (!event_queue_.empty()) {
     AsyncEventItem* item = event_queue_.dequeue();
     asyncEventPool_.free(item);
@@ -2029,6 +2049,9 @@ void Runtime::ConcurrentAsyncEvents::Clear() {
 }
 
 bool Runtime::ConcurrentAsyncEvents::GetEvent(AsyncEventItem& event) {
+  if (use_bounded_queue_) {
+    return bounded_queue_->try_pop(event);
+  }
   AsyncEventItem* item = event_queue_.dequeue();
   if (item != nullptr) {
     event = *item;
@@ -2039,6 +2062,15 @@ bool Runtime::ConcurrentAsyncEvents::GetEvent(AsyncEventItem& event) {
 }
 
 bool Runtime::ConcurrentAsyncEvents::GetAllEvents(std::vector<AsyncEventItem>& all_events) {
+  if (use_bounded_queue_) {
+    AsyncEventItem item;
+    bool got_any = false;
+    while (bounded_queue_->try_pop(item)) {
+      all_events.emplace_back(item);
+      got_any = true;
+    }
+    return got_any;
+  }
   AsyncEventItem* item = nullptr;
   while (!event_queue_.empty()) {
     item = event_queue_.dequeue();
@@ -2053,14 +2085,29 @@ bool Runtime::ConcurrentAsyncEvents::GetAllEvents(std::vector<AsyncEventItem>& a
 
 void Runtime::ConcurrentAsyncEvents::AddEventsBack(const std::vector<AsyncEventItem>& events) {
   for (const auto& event : events) {
-    AsyncEventItem* item = asyncEventPool_.alloc();
-    *item = event;
-    event_queue_.enqueue(item);
+    if (use_bounded_queue_) {
+      bounded_queue_->push(event);
+    } else {
+      AsyncEventItem* item = asyncEventPool_.alloc();
+      *item = event;
+      event_queue_.enqueue(item);
+    }
   }
 }
 
 size_t Runtime::ConcurrentAsyncEvents::Size() {
+  if (use_bounded_queue_) {
+    auto sz = bounded_queue_->size();
+    return sz > 0 ? static_cast<size_t>(sz) : 0;
+  }
   return event_queue_.size();
+}
+
+bool Runtime::ConcurrentAsyncEvents::empty() {
+  if (use_bounded_queue_) {
+    return bounded_queue_->empty();
+  }
+  return event_queue_.empty();
 }
 
 void Runtime::BindErrorHandlers() {

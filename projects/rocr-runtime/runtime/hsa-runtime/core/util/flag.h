@@ -323,6 +323,10 @@ class Flag {
     // hsa_amd_counted_queue_acquire API. If not set, default queue size is set to 16384.
     var = os::GetEnvVar("HSA_COUNTED_QUEUE_SIZE");
     counted_queue_size_ = var.empty() ? DEFAULT_COUNTED_QUEUE_SIZE : atoi(var.c_str());
+
+    // Set HSA_ASYNC_QUEUE_LEGACY=1 to fall back to unbounded MPSC + mutex pool
+    var = os::GetEnvVar("HSA_ASYNC_QUEUE_LEGACY");
+    async_queue_legacy_ = (!var.empty() && atoi(var.c_str()) == 1);
   }
 
   void parse_masks(uint32_t maxGpu, uint32_t maxCU) {
@@ -473,7 +477,9 @@ class Flag {
   [[nodiscard]]
   bool lightweight_core_dump_enable() const { 
     return lightweight_core_dump_enable_; 
-  } 
+  }
+
+  bool async_queue_legacy() const { return async_queue_legacy_; }
 
   void set_sdma(bool peer_sdma, bool sdma_gang) {
     enable_peer_sdma_ = peer_sdma ? SDMA_ENABLE : SDMA_DISABLE;
@@ -576,6 +582,7 @@ class Flag {
 
   uint32_t cp_queues_limit_;
   size_t counted_queue_size_;
+  bool async_queue_legacy_ = false;
 
   // Map GPU index post RVD to its default cu mask.
   std::map<uint32_t, std::vector<uint32_t>> cu_mask_;
