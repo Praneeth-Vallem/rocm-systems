@@ -1284,6 +1284,7 @@ kmd_driver_t::agent_snapshot (os_agent_info_t *snapshots,
 
   *agent_count = std::min (snapshot_count, m_agents.size ());
 
+  std::vector<char> conv_buf;
   size_t snapshot_idx = 0;
   for (const auto &agent_handle : m_agents)
     {
@@ -1301,19 +1302,19 @@ kmd_driver_t::agent_snapshot (os_agent_info_t *snapshots,
       if (m_d3d.api.query_adapter_info (&query_info) == STATUS_SUCCESS)
         {
           /* We need to convert from wchar string to std::string.  */
-          char tmp[MAX_PATH * MB_CUR_MAX] = {};
+          conv_buf.resize (MAX_PATH * MB_CUR_MAX);
           size_t tmp_i = 0;
           for (size_t i = 0;
                i < MAX_PATH && adapter_reg_info.AdapterString[i] != 0; i++)
             {
               int r
-                = ::wctomb (&tmp[tmp_i], adapter_reg_info.AdapterString[i]);
+                = ::wctomb (&conv_buf[tmp_i], adapter_reg_info.AdapterString[i]);
               if (r == -1)
-                tmp[tmp_i++] = '?';
+                conv_buf[tmp_i++] = '?';
               else
                 tmp_i += r;
             }
-          agent.name = tmp;
+          agent.name = &conv_buf[0];
         }
       else
         agent.name = "<unknown>";
