@@ -326,18 +326,6 @@ jobs:
             echo "Unit tests passed"
           fi
 
-
-          # echo "Running CLI unit tests..."
-          # if ! ./cli_unit_test.py -v > /tmp/test-results-${{ matrix.os }}/cli_unit_test_output.txt 2>&1; then
-          #   echo "CLI Unit tests failed!"
-          #   echo "=============== CLI UNIT TEST OUTPUT ==============="
-          #   tail -100 /tmp/test-results-${{ matrix.os }}/cli_unit_test_output.txt
-          #   echo "===================================================="
-          #   exit 1
-          # else
-          #   echo "CLI Unit tests passed"
-          # fi
-
           echo "Running perf tests..."
           if ! ./perf_tests.py -v > /tmp/test-results-${{ matrix.os }}/perf_test_output.txt 2>&1; then
             echo "Perf tests failed!"
@@ -379,12 +367,6 @@ jobs:
         run: |
           echo "Displaying Unit Test Results for ${{ matrix.os }}"
           cat /tmp/test-results-${{ matrix.os }}/unit_test_output.txt || echo "No unit test results found for ${{ matrix.os }}"
-
-      - name: CLI Unit Test Results
-        if: always()
-        run: |
-          echo "Displaying CLI Unit Test Results for ${{ matrix.os }}"
-          cat /tmp/test-results-${{ matrix.os }}/cli_unit_test_output.txt || echo "No CLI unit test results found for ${{ matrix.os }}"
 
       - name: Perf Test Results
         if: always()
@@ -739,18 +721,6 @@ jobs:
             echo "Unit tests passed"
           fi
 
-
-          # echo "Running CLI unit tests..."
-          # if ! ./cli_unit_test.py -v > /tmp/test-results-${{ matrix.os }}/cli_unit_test_output.txt 2>&1; then
-          #   echo "CLI Unit tests failed!"
-          #   echo "=============== CLI UNIT TEST OUTPUT ==============="
-          #   tail -100 /tmp/test-results-${{ matrix.os }}/cli_unit_test_output.txt
-          #   echo "===================================================="
-          #   exit 1
-          # else
-          #   echo "CLI Unit tests passed"
-          # fi
-
           echo "Running perf tests..."
           if ! ./perf_tests.py -v > /tmp/test-results-${{ matrix.os }}/perf_test_output.txt 2>&1; then
             echo "Perf tests failed!"
@@ -792,12 +762,6 @@ jobs:
         run: |
           echo "Displaying Unit Test Results for ${{ matrix.os }}"
           cat /tmp/test-results-${{ matrix.os }}/unit_test_output.txt || echo "No unit test results found for ${{ matrix.os }}"
-
-      - name: CLI Unit Test Results
-        if: always()
-        run: |
-          echo "Displaying CLI Unit Test Results for ${{ matrix.os }}"
-          cat /tmp/test-results-${{ matrix.os }}/cli_unit_test_output.txt || echo "No CLI unit test results found for ${{ matrix.os }}"
 
       - name: Perf Test Results
         if: always()
