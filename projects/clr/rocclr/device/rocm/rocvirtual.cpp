@@ -4402,7 +4402,6 @@ void VirtualGPU::submitPerfCounter(amd::PerfCounterCommand& vcmd) {
 
 // ================================================================================================
 void* VirtualGPU::getOrCreateHostcallBuffer() {
-  std::scoped_lock lock(execution());
   if (hostcallBuffer_ != nullptr) {
     return hostcallBuffer_;
   }
