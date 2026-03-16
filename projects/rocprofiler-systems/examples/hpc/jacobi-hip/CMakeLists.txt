@@ -27,15 +27,45 @@ if(NOT MPI_CXX_FOUND)
     return()
 endif()
 
-find_library(ROCTX64_LIBRARY NAMES roctx64 PATHS ${ROCM_PATH}/lib ${ROCM_PATH}/lib64)
-
+find_path(
+    ROCTRACER_INCLUDE_DIR
+    NAMES roctracer_ext.h
+    HINTS ${ROCmVersion_DIR} ${ROCM_PATH}
+    ENV ROCM_PATH
+    /opt/rocm
+    PATHS ${ROCmVersion_DIR} ${ROCM_PATH}
+    ENV ROCM_PATH
+    /opt/rocm
+    PATH_SUFFIXES include/roctracer
+)
+find_library(
+    ROCTX64_LIBRARY
+    NAMES roctx64
+    HINTS ${ROCmVersion_DIR} ${ROCM_PATH}
+    ENV ROCM_PATH
+    /opt/rocm
+    PATHS ${ROCmVersion_DIR} ${ROCM_PATH}
+    ENV ROCM_PATH
+    /opt/rocm
+    PATH_SUFFIXES lib lib64
+)
 find_library(
     ROCTRACER64_LIBRARY
     NAMES roctracer64
-    PATHS ${ROCM_PATH}/lib ${ROCM_PATH}/lib64
+    HINTS ${ROCmVersion_DIR} ${ROCM_PATH}
+    ENV ROCM_PATH
+    /opt/rocm
+    PATHS ${ROCmVersion_DIR} ${ROCM_PATH}
+    ENV ROCM_PATH
+    /opt/rocm
+    PATH_SUFFIXES lib lib64
 )
 
-if(NOT ROCTX64_LIBRARY OR NOT ROCTRACER64_LIBRARY)
+message(STATUS "ROCTRACER_INCLUDE_DIR: ${ROCTRACER_INCLUDE_DIR}")
+message(STATUS "ROCTX64_LIBRARY: ${ROCTX64_LIBRARY}")
+message(STATUS "ROCTRACER64_LIBRARY: ${ROCTRACER64_LIBRARY}")
+
+if(NOT ROCTRACER_INCLUDE_DIR OR NOT ROCTX64_LIBRARY OR NOT ROCTRACER64_LIBRARY)
     rocprofiler_systems_message(AUTHOR_WARNING "roctracer not found, this is required for jacobi-hip example")
     return()
 endif()
@@ -57,10 +87,7 @@ add_executable(${HPC_EXAMPLE_NAME} ${_JACOBI_HIP_SOURCES})
 
 target_compile_options(${HPC_EXAMPLE_NAME} PRIVATE -xhip)
 target_compile_definitions(${HPC_EXAMPLE_NAME} PRIVATE __HIP_PLATFORM_HCC__)
-target_include_directories(
-    ${HPC_EXAMPLE_NAME}
-    PRIVATE ${ROCM_PATH}/roctracer/include ${ROCM_PATH}/include/roctracer
-)
+target_include_directories(${HPC_EXAMPLE_NAME} PRIVATE ${ROCTRACER_INCLUDE_DIR})
 target_compile_options(
     ${HPC_EXAMPLE_NAME}
     PRIVATE -O3 -g -ggdb -fPIC -march=native -Wall -Wno-unused-result
