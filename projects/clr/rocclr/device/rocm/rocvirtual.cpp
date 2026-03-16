@@ -4402,6 +4402,7 @@ void VirtualGPU::submitPerfCounter(amd::PerfCounterCommand& vcmd) {
 
 // ================================================================================================
 void* VirtualGPU::getOrCreateHostcallBuffer() {
+  std::scoped_lock lock(execution());
   if (hostcallBuffer_ != nullptr) {
     return hostcallBuffer_;
   }
@@ -4429,6 +4430,7 @@ void* VirtualGPU::getOrCreateHostcallBuffer() {
   if (!amd::enableHostcalls(dev(), hostcallBuffer_, numPackets)) {
     ClPrint(amd::LOG_ERROR, amd::LOG_QUEUE, "Failed to register hostcall buffer %p with listener",
             hostcallBuffer_);
+    dev().svmFree(hostcallBuffer_);
     return nullptr;
   }
   return hostcallBuffer_;
