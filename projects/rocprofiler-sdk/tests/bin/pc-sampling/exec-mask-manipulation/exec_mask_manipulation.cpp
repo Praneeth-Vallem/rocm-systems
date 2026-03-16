@@ -28,6 +28,22 @@ THE SOFTWARE.
 #define ITER_NUM   16 * 1024
 #define BLOCK_SIZE 1024
 
+// When a PC sampling event fires, the wave's program counter is snapshotted into the
+// SQ_PERF_SNAPSHOT_PC_LO/HI registers. However, the wave must finish all outstanding
+// instructions before jumping to the trap handler, where the execution mask is read from
+// ttmp[0:1]. This means the execution mask observed in the trap handler may correspond to
+// a instruction up to ~4 instructions ahead of the snapshotted PC — a phenomenon known as
+// "instruction skid". To ensure the execution mask recorded for each instruction of interest
+// is accurate, we pad each loop iteration with 4 s_nop instructions at the beginning and
+// end. This guarantees that even with maximum skid, the sampled execution mask still
+// reflects the state within the region of interest rather than a neighboring loop control
+// or branch instruction.
+#define EXEC_MASK_SKID                                                                             \
+    asm volatile("s_nop 1\n");                                                                     \
+    asm volatile("s_nop 1\n");                                                                     \
+    asm volatile("s_nop 1\n");                                                                     \
+    asm volatile("s_nop 1\n");
+
 #define HIP_API_CALL(CALL)                                                                         \
     {                                                                                              \
         hipError_t error_ = (CALL);                                                                \
@@ -60,6 +76,7 @@ kernel1(const int c)
 #pragma nounroll
     for(int i = 0; i < ITER_NUM; i++)
     {
+        EXEC_MASK_SKID;
         asm volatile("v_mov_b32 %0 %1\n" : "=v"(a) : "s"(c));
         asm volatile("v_mov_b32 %0 %1\n" : "=v"(a) : "s"(c));
         asm volatile("v_mov_b32 %0 %1\n" : "=v"(a) : "s"(c));
@@ -160,6 +177,7 @@ kernel1(const int c)
         asm volatile("v_mov_b32 %0 %1\n" : "=v"(a) : "s"(c));
         asm volatile("v_mov_b32 %0 %1\n" : "=v"(a) : "s"(c));
         asm volatile("v_mov_b32 %0 %1\n" : "=v"(a) : "s"(c));
+        EXEC_MASK_SKID;
     }
 }
 
@@ -170,6 +188,7 @@ kernel2(const int c)
 #pragma nounroll
     for(int i = 0; i < ITER_NUM; i++)
     {
+        EXEC_MASK_SKID;
         asm volatile("s_mov_b32 %0 %1\n" : "=s"(a) : "s"(c));
         asm volatile("s_mov_b32 %0 %1\n" : "=s"(a) : "s"(c));
         asm volatile("s_mov_b32 %0 %1\n" : "=s"(a) : "s"(c));
@@ -270,6 +289,7 @@ kernel2(const int c)
         asm volatile("s_mov_b32 %0 %1\n" : "=s"(a) : "s"(c));
         asm volatile("s_mov_b32 %0 %1\n" : "=s"(a) : "s"(c));
         asm volatile("s_mov_b32 %0 %1\n" : "=s"(a) : "s"(c));
+        EXEC_MASK_SKID;
     }
 }
 
@@ -285,6 +305,7 @@ kernel3(const float c)
     {
         if(tid_even == 0)
         {
+            EXEC_MASK_SKID;
             asm volatile("v_rcp_f64 %0, %0\n" : "+v"(a), "=s"(i) : "s"(c));
             asm volatile("v_rcp_f64 %0, %0\n" : "+v"(a), "=s"(i) : "s"(c));
             asm volatile("v_rcp_f64 %0, %0\n" : "+v"(a), "=s"(i) : "s"(c));
@@ -385,9 +406,11 @@ kernel3(const float c)
             asm volatile("v_rcp_f64 %0, %0\n" : "+v"(a), "=s"(i) : "s"(c));
             asm volatile("v_rcp_f64 %0, %0\n" : "+v"(a), "=s"(i) : "s"(c));
             asm volatile("v_rcp_f64 %0, %0\n" : "+v"(a), "=s"(i) : "s"(c));
+            EXEC_MASK_SKID;
         }
         else
         {
+            EXEC_MASK_SKID;
             asm volatile("v_rcp_f32 %0, %0\n" : "+v"(d), "=s"(e) : "s"(c));
             asm volatile("v_rcp_f32 %0, %0\n" : "+v"(d), "=s"(e) : "s"(c));
             asm volatile("v_rcp_f32 %0, %0\n" : "+v"(d), "=s"(e) : "s"(c));
@@ -488,6 +511,7 @@ kernel3(const float c)
             asm volatile("v_rcp_f32 %0, %0\n" : "+v"(d), "=s"(e) : "s"(c));
             asm volatile("v_rcp_f32 %0, %0\n" : "+v"(d), "=s"(e) : "s"(c));
             asm volatile("v_rcp_f32 %0, %0\n" : "+v"(d), "=s"(e) : "s"(c));
+            EXEC_MASK_SKID;
         }
     }
 }
