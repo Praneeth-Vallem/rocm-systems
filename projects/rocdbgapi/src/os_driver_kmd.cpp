@@ -56,6 +56,12 @@
 
 using namespace std::string_literals;
 
+/* NTSTATUS is int32_t, but many of its constants are DWORD, but not
+   all, resulting in warnings about comparisons of integers of
+   different signs, etc.  Use this macro to refer to a STATUS_XXX
+   macro cast to DWORD.  */
+#define DW_STATUS(S) static_cast<DWORD> (STATUS_ ## S)
+
 namespace amd::dbgapi
 {
 
@@ -832,11 +838,11 @@ template <>
 std::string
 to_string (NTSTATUS status)
 {
-#define NT_CASE(x)                                                            \
-  case STATUS_##x:                                                            \
+#define NT_CASE(x)							\
+  case DW_STATUS (x):							\
     return #x
 
-  switch (status)
+  switch (static_cast<DWORD> (status))
     {
       NT_CASE (SUCCESS);
       NT_CASE (NOT_SUPPORTED);
@@ -855,23 +861,27 @@ to_string (NTSTATUS status)
 static amd_dbgapi_status_t
 nt_status_to_dbgapi_status (NTSTATUS status)
 {
-  switch (status)
+#define NT_CASE(x)				\
+  case DW_STATUS (x)
+
+  switch (static_cast<DWORD> (status))
     {
-    case STATUS_SUCCESS:
+    NT_CASE (SUCCESS):
       return AMD_DBGAPI_STATUS_SUCCESS;
-    case STATUS_NOT_SUPPORTED:
+    NT_CASE (NOT_SUPPORTED):
       return AMD_DBGAPI_STATUS_ERROR_NOT_SUPPORTED;
-    case STATUS_DRIVER_PROCESS_TERMINATED:
+    NT_CASE (DRIVER_PROCESS_TERMINATED):
       return AMD_DBGAPI_STATUS_ERROR_PROCESS_EXITED;
 
-    case STATUS_RESOURCE_IN_USE:
-    case STATUS_NO_MEMORY:
-    case STATUS_INVALID_PARAMETER:
-    case STATUS_RETRY:
-    case STATUS_UNSUCCESSFUL:
+    NT_CASE (RESOURCE_IN_USE):
+    NT_CASE (NO_MEMORY):
+    NT_CASE (INVALID_PARAMETER):
+    NT_CASE (RETRY):
+    NT_CASE (UNSUCCESSFUL):
     default:
       return AMD_DBGAPI_STATUS_ERROR;
     }
+#undef NT_CASE
 }
 
 /** The KMD (windows) driver backend for rocm-dbgapi.
@@ -1924,15 +1934,15 @@ kmd_driver_t::set_address_watch (os_agent_id_t os_agent_id,
       cmd.Input.setAddrWatchIn.watchAddr = address;
       cmd.Input.setAddrWatchIn.watchAddrMask = mask;
 
-      NTSTATUS status = send_escape (m_agents[os_agent_id], cmd);
-      if (status == STATUS_RESOURCE_IN_USE)
+      DWORD status = send_escape (m_agents[os_agent_id], cmd);
+      if (status == DW_STATUS (RESOURCE_IN_USE))
         continue;
-      else if (status == STATUS_INVALID_PARAMETER)
+      else if (status == DW_STATUS (INVALID_PARAMETER))
         /* We get this when trying to set an invalid watchpoint.  */
         return AMD_DBGAPI_STATUS_ERROR_NO_WATCHPOINT_AVAILABLE;
-      else if (status != STATUS_SUCCESS)
+      else if (status != DW_STATUS (SUCCESS))
         return nt_status_to_dbgapi_status (status);
-      else if (status == STATUS_SUCCESS)
+      else if (status == DW_STATUS (SUCCESS))
         {
           *os_watch_id = id;
           return AMD_DBGAPI_STATUS_SUCCESS;
