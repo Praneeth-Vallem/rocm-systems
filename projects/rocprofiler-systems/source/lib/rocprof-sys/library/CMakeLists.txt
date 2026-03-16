@@ -15,7 +15,6 @@ set(library_sources
 )
 
 set(library_headers
-    ${CMAKE_CURRENT_LIST_DIR}/control.hpp
     ${CMAKE_CURRENT_LIST_DIR}/coverage.hpp
     ${CMAKE_CURRENT_LIST_DIR}/cpu_freq.hpp
     ${CMAKE_CURRENT_LIST_DIR}/process_sampler.hpp
@@ -50,7 +49,6 @@ target_sources(
 )
 
 add_subdirectory(rocprofiler-sdk)
-
 add_subdirectory(causal)
 add_subdirectory(components)
 add_subdirectory(coverage)
