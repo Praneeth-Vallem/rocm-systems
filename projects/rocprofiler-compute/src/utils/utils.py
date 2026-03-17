@@ -29,7 +29,6 @@ import glob
 import io
 import json
 import locale
-import logging
 import os
 import re
 import select
@@ -981,9 +980,11 @@ def run_prof(
         shutil.rmtree(new_env["ROCPROFILER_METRICS_PATH"], ignore_errors=True)
 
     if (not is_mode_live_attach) and (not success):
-        if loglevel > logging.INFO:
-            for line in output.splitlines():
-                console_error(line, exit=False)
+        _PROFILER_LOG_RE = re.compile(r"^\[rocprofiler|^W\d{8}\s")
+        for line in output.splitlines():
+            stripped = line.strip()
+            if stripped and not _PROFILER_LOG_RE.match(stripped):
+                console_error(stripped, exit=False)
         console_error("Profiling execution failed.")
 
     results_files: list[str] = []

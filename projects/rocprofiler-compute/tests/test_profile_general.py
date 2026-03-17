@@ -3845,6 +3845,234 @@ def test_multi_rank_profiling_mpi_comm(
     test_utils.clean_output_dir(config["cleanup"], workload_dir)
 
 
+@pytest.mark.torch_trace
+@pytest.mark.parametrize(
+    "workload_cmd, torch_trace, expected_exit, expected_error, absent_error",
+    [
+        # -----------------------------------------------------------
+        # --torch-trace: injection validation
+        # -----------------------------------------------------------
+        # Missing script with --torch-trace
+        (
+            ["python3", "nonexistent_script_abc.py"],
+            True,
+            1,
+            "Python script not found: nonexistent_script_abc.py",
+            None,
+        ),
+        # -c with --torch-trace (injection skipped, command still runs)
+        (
+            ["python3", "-c", "print(1)"],
+            True,
+            None,
+            "Cannot inject ROCTX markers into 'python -c'",
+            None,
+        ),
+        # -m with --torch-trace (injection skipped, command still runs)
+        (
+            ["python3", "-m", "json.tool", "--help"],
+            True,
+            None,
+            "Cannot inject ROCTX markers into 'python -m'",
+            None,
+        ),
+        # Bare interpreter with --torch-trace
+        (
+            ["python3"],
+            True,
+            1,
+            "No Python script found in the workload command",
+            None,
+        ),
+        # Flags only, no script, with --torch-trace
+        (
+            ["python3", "-u", "-v"],
+            True,
+            1,
+            "No Python script found in the workload command",
+            None,
+        ),
+        # Missing script after flags with --torch-trace
+        (
+            ["python3", "-u", "nonexistent_script_abc.py"],
+            True,
+            1,
+            "Python script not found: nonexistent_script_abc.py",
+            None,
+        ),
+        # Non-Python binary with --torch-trace
+        (
+            ["./tests/vcopy", "-n", "1048576", "-b", "256"],
+            True,
+            None,
+            "Command does not look like a Python entry point",
+            None,
+        ),
+        # Multiple flags before script with --torch-trace
+        (
+            None,  # "multi_flags" — replaced with tmp script in test body
+            True,
+            None,
+            None,
+            "Python script not found",
+        ),
+        # Valid script with flags and --torch-trace (inject position test)
+        (
+            None,  # "valid_script" — replaced with tmp script in test body
+            True,
+            None,
+            None,
+            "Python script not found",
+        ),
+        # -----------------------------------------------------------
+        # General workload validation (no --torch-trace)
+        # -----------------------------------------------------------
+        # Typo in executable name
+        (
+            ["pythn3", "script.py"],
+            False,
+            1,
+            "doesn't point to an executable",
+            None,
+        ),
+        # Non-existent binary path
+        (
+            ["./no_such_binary"],
+            False,
+            1,
+            "doesn't point to an executable",
+            None,
+        ),
+        # -c is a valid workload without --torch-trace
+        (
+            ["python3", "-c", "print('hello')"],
+            False,
+            None,
+            None,
+            "Cannot inject ROCTX markers",
+        ),
+        # -m is a valid workload without --torch-trace
+        (
+            ["python3", "-m", "json.tool", "--help"],
+            False,
+            None,
+            None,
+            "Cannot inject ROCTX markers",
+        ),
+        # -----------------------------------------------------------
+        # shlex.join quoting preservation
+        # -----------------------------------------------------------
+        # -c with multi-word arg: quoting must survive join/split round-trip
+        (
+            ["python3", "-c", "import sys; print(sys.version)"],
+            False,
+            None,
+            None,
+            "SyntaxError",
+        ),
+        # -m with dotted module: tokens must not be split
+        (
+            ["python3", "-m", "json.tool", "--help"],
+            False,
+            None,
+            None,
+            "SyntaxError",
+        ),
+        # -----------------------------------------------------------
+        # Error surfacing (workload failures produce actionable messages)
+        # -----------------------------------------------------------
+        # Missing script: Python's own error should surface, not profiler noise
+        (
+            ["python3", "totally_missing_file_xyz.py"],
+            False,
+            1,
+            "No such file or directory",
+            None,
+        ),
+    ],
+    ids=[
+        "missing_script",
+        "dash_c_torch_trace",
+        "dash_m_torch_trace",
+        "bare_interpreter",
+        "flags_only",
+        "missing_script_after_flags",
+        "non_python_binary_torch_trace",
+        "multi_flags_torch_trace",
+        "valid_script_with_flags",
+        "typo_in_executable",
+        "nonexistent_binary",
+        "dash_c_valid",
+        "dash_m_valid",
+        "dash_c_multiword_quoting",
+        "dash_m_dotted_module_quoting",
+        "missing_script_error_surfacing",
+    ],
+)
+def test_profile_invalid_workloads(
+    binary_handler_profile_rocprof_compute,
+    tmp_path,
+    request,
+    workload_cmd,
+    torch_trace,
+    expected_exit,
+    expected_error,
+    absent_error,
+):
+    """
+    Verify workload command validation in profiling mode:
+    - Invalid workloads are rejected with actionable errors when --torch-trace is used.
+    - Valid Python invocations (-c, -m) work normally without --torch-trace.
+    - Interpreter flags (e.g. -u) don't break inject_roctx.py placement.
+    - shlex.join preserves quoting for -c/-m multi-word arguments.
+    - Workload failures surface actionable error messages.
+    """
+    if workload_cmd is None:
+        script = tmp_path / "dummy_torch_script.py"
+        script.write_text("import sys; print('ok'); sys.exit(0)\n")
+        param_id = request.node.callspec.id
+        if "multi_flags" in param_id:
+            workload_cmd = ["python3", "-W", "ignore", "-u", str(script)]
+        else:
+            workload_cmd = ["python3", "-u", str(script)]
+
+    app_name = "test_invalid_workload"
+    config[app_name] = workload_cmd
+
+    tag = "_".join(workload_cmd[:2]) if len(workload_cmd) > 1 else workload_cmd[0]
+    workload_dir = test_utils.get_output_dir(
+        param_id=f"invalid_wl_{'tt' if torch_trace else 'std'}_{tag}"
+    )
+
+    options = ["--experimental", "--torch-trace"] if torch_trace else []
+
+    returncode, stdout, stderr = binary_handler_profile_rocprof_compute(
+        config,
+        workload_dir,
+        options=options,
+        check_success=False,
+        app_name=app_name,
+        capture_output=True,
+    )
+
+    output = stdout + stderr
+
+    if expected_exit is not None:
+        assert returncode == expected_exit, (
+            f"Expected exit code {expected_exit} for {workload_cmd}, got {returncode}"
+        )
+    if expected_error is not None:
+        assert expected_error in output, (
+            f"Expected '{expected_error}' in output:\n{output}"
+        )
+    if absent_error is not None:
+        assert absent_error not in output, (
+            f"'{absent_error}' should NOT appear for {workload_cmd}:\n{output}"
+        )
+
+    test_utils.clean_output_dir(config["cleanup"], workload_dir)
+
+
 @pytest.mark.multi_rank
 def test_wrapped_mpi(binary_handler_profile_rocprof_compute):
     """

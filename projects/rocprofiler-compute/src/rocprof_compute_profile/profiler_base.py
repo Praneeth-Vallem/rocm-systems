@@ -131,7 +131,7 @@ class RocProfCompute_Base:
             exec_candidate = shutil.which(args.remaining[0])
             if not exec_candidate:
                 console_error(
-                    f"Your command {args.remaining[0]} doesn't point to a executable. "
+                    f"Your command {args.remaining[0]} doesn't point to an executable. "
                     "Please verify."
                 )
             resolved_exec_path = Path(exec_candidate).resolve()
@@ -150,11 +150,51 @@ class RocProfCompute_Base:
 
                 # Case 1: Explicit python command (python, python3, etc.)
                 if args.remaining[0].startswith("python"):
-                    # Insert inject_roctx.py after the python interpreter
-                    args.remaining.insert(1, str(inject_script))
+                    # Find the script position by skipping interpreter flags
+                    script_index = None
+                    skip_next = False
+                    inject_skipped = False
+                    for i in range(1, len(args.remaining)):
+                        if skip_next:
+                            skip_next = False
+                            continue
+                        token = args.remaining[i]
+                        if token in ("-c", "-m"):
+                            console_warning(
+                                "Cannot inject ROCTX markers"
+                                f" into 'python {token}'"
+                                " invocations. Launching"
+                                " workload as-is;"
+                                " --torch-trace may have"
+                                " no effect."
+                            )
+                            inject_skipped = True
+                            break
+                        if token in ("-W", "-X", "-Q"):
+                            skip_next = True
+                            continue
+                        if token.startswith("-"):
+                            continue
+                        script_index = i
+                        break
+
+                    if not inject_skipped:
+                        if script_index is None:
+                            console_error(
+                                "No Python script found in the workload command. "
+                                "Use a script-based workload: python script.py"
+                            )
+
+                        script_arg = args.remaining[script_index]
+                        if not Path(script_arg).is_file():
+                            console_error(
+                                f"Python script not found: {script_arg}. "
+                                "Check the path and try again."
+                            )
+
+                        args.remaining.insert(script_index, str(inject_script))
                 # Case 2: Direct Python script execution (./main.py, /path/to/script.py)
                 elif args.remaining[0].endswith((".py", ".pyw", ".pyc", ".pyo")):
-                    # Use current Python interpreter
                     args.remaining.insert(0, str(inject_script))
                     args.remaining.insert(0, sys.executable)
                 else:
@@ -174,11 +214,11 @@ class RocProfCompute_Base:
                     console_warning(
                         "Workload appears to be a self-contained binary. "
                         "Such bundles typically ship private ROCm/HSA libraries, which "
-                        "prevents --torch-trace from collecting data."
+                        "prevents --torch-trace from collecting data. "
                         "Rebuild without packaging libhsa/libhip or "
-                        "adjust LD_LIBRARY_PATH to /opt/rocm) before profiling."
+                        "adjust LD_LIBRARY_PATH to /opt/rocm before profiling."
                     )
-            args.remaining = " ".join(args.remaining)
+            args.remaining = shlex.join(args.remaining)
         elif not args.attach_pid:
             console_error(
                 "Profiling command required. Pass application executable after -- "
