@@ -1,4 +1,6 @@
-#
+# Copyright (c) Advanced Micro Devices, Inc.
+# SPDX-License-Identifier:  MIT
+
 set(library_sources
     ${CMAKE_CURRENT_LIST_DIR}/coverage.cpp
     ${CMAKE_CURRENT_LIST_DIR}/cpu_freq.cpp
@@ -41,11 +43,10 @@ target_sources(
 target_sources(
     rocprofiler-systems-object-library
     PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/control.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/rocm.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/rocprofiler-sdk.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/amd_smi.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/amd_smi_ainic.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/rocm.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/rocprofiler-sdk.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/amd_smi.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/amd_smi_ainic.cpp
 )
 
 add_subdirectory(rocprofiler-sdk)
