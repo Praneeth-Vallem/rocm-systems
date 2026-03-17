@@ -66,6 +66,7 @@ set(TEST_SRC
     hipTexRefGetAddressMode.cc
     hipTexRefSetGetFilterMode.cc
     hipDeviceGetTexture1DLinearMaxWidth.cc
+    hipMipmappedArrayGetMemoryRequirements.cc
 )
 
 # tests not for gfx90a+
@@ -98,7 +99,6 @@ set(NOT_FOR_gfx90a_AND_ABOVE_TEST
     hipTexRefSetGetMipmapLevelBias.cc
     hipTexRefSetGetMipmapLevelClamp.cc
     hipTexRefSetGetMipmappedArray.cc
-    hipMipmappedArrayGetMemoryRequirements.cc
 )
 
 if (HIP_PLATFORM MATCHES "amd")
@@ -124,7 +124,7 @@ endfunction()  # CheckAcceptedArchs
 
 if (HIP_PLATFORM MATCHES "amd")
   add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/tex_ref_get_module.code
-                   COMMAND ${CMAKE_HIP_COMPILER} --cuda-device-only ${OFFLOAD_ARCH_LIST} -Wno-deprecated-declarations
+                   COMMAND ${CMAKE_HIP_COMPILER} ${HIP_DEVICE_BUILD_FLAGS_NO_ARCH} ${OFFLOAD_ARCH_LIST} --cuda-device-only -Wno-deprecated-declarations
                    -x hip ${CMAKE_CURRENT_SOURCE_DIR}/tex_ref_get_module.cc
                    -I${HIP_INCLUDE_DIR} ${HIP_PATH_OPT}
                    -o tex_ref_get_module.code

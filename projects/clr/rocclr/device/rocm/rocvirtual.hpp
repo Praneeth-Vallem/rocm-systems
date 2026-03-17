@@ -1,22 +1,8 @@
-/* Copyright (c) 2026 Advanced Micro Devices, Inc.
-
- Permission is hereby granted, free of charge, to any person obtaining a copy
- of this software and associated documentation files (the "Software"), to deal
- in the Software without restriction, including without limitation the rights
- to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- copies of the Software, and to permit persons to whom the Software is
- furnished to do so, subject to the following conditions:
-
- The above copyright notice and this permission notice shall be included in
- all copies or substantial portions of the Software.
-
- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- THE SOFTWARE. */
+/*
+ * Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+ *
+ * SPDX-License-Identifier: MIT
+ */
 
 #pragma once
 
@@ -117,7 +103,7 @@ class Timestamp : public amd::ReferenceCountedObject {
   amd::Command* parsedCommand_;            //!< Command down the list, considering command_ as head
   std::vector<ProfilingSignal*> signals_;  //!< The list of all signals, associated with the TS
   hsa_signal_t callback_signal_;  //!< Signal associated with a callback for possible later update
-  amd::Monitor lock_;             //!< Serialize timestamp update
+  std::recursive_mutex lock_;     //!< Serialize timestamp update
   bool accum_ena_ = false;        //!< If TRUE then the accumulation of execution times has started
   bool hasHwProfiling_ = false;   //!< If TRUE then HwProfiling is enabled for the command
   bool blocking_ = true;          //!< If TRUE callback is blocking
@@ -137,8 +123,7 @@ class Timestamp : public amd::ReferenceCountedObject {
         gpu_(gpu),
         command_(command),
         parsedCommand_(nullptr),
-        callback_signal_(hsa_signal_t{}),
-        lock_(true) /* Timestamp lock */ {}
+        callback_signal_(hsa_signal_t{}) {}
 
   ~Timestamp() {}
 
@@ -438,12 +423,6 @@ class VirtualGPU : public device::VirtualDevice {
   //! Adds a pinned memory object into a map
   void addPinnedMem(amd::Memory* mem);
 
-  //! Release pinned memory objects
-  void releasePinnedMem();
-
-  //! Finds if pinned memory is cached
-  amd::Memory* findPinnedMem(void* addr, size_t size);
-
   void enableSyncBlit() const;
 
   void hasPendingDispatch() { hasPendingDispatch_ = true; }
@@ -604,8 +583,6 @@ class VirtualGPU : public device::VirtualDevice {
 
     return false;
   }
-
-  std::vector<amd::Memory*> pinnedMems_;  //!< Pinned memory list
 
   //! Queue state flags
   union {
