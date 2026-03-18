@@ -2244,6 +2244,24 @@ stop_context(const client_data::context_id_vec_t& ctxs)
                   [](const auto& ctx) { stop_context(ctx); });
 }
 
+void
+flush()
+{
+    if(!tool_data) return;
+
+    for(const auto& itr : tool_data->get_buffers())
+    {
+        if(itr.handle > 0)
+        {
+            auto status = rocprofiler_flush_buffer(itr);
+            if(status != ROCPROFILER_STATUS_ERROR_BUFFER_BUSY)
+            {
+                ROCPROFILER_CALL(status);
+            }
+        }
+    }
+}
+
 int
 set_kernel_rename_and_stream_correlation_id(
     rocprofiler_thread_id_t /* thr_id */, rocprofiler_context_id_t /* ctx_id */,
@@ -2539,7 +2557,7 @@ tool_init(rocprofiler_client_finalize_t fini_func, void* user_data)
     }
     else
     {
-        if(!_data)
+        if(_data != nullptr)
         {
             start_context(_data->get_code_obj_context());
             start_context(_data->get_control_context());
@@ -2559,6 +2577,7 @@ tool_fini(void* callback_data)
     ompt_finalize_orphan_events();
 #endif
 
+    flush();
     stop();
 
     if(config::get_use_process_sampling() && config::get_use_amd_smi())
