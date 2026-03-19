@@ -27,6 +27,7 @@
 
 import re
 import sys
+import traceback
 import warnings
 from pathlib import Path
 
@@ -39,7 +40,7 @@ try:
     from rocprof_compute_base import RocProfCompute
     from utils.logger import console_error
 except ImportError as e:
-    print(f"[WARNING] Initial import failed: {e}")
+    print(f"{e}")
     # In wheel package, softlink is not supported.
     # rocprof-compute will get installed in bin and libexec/rocprofiler-compute.
     # When invoked from bin folder, the extra paths are required to import the
@@ -54,14 +55,12 @@ except ImportError as e:
 
         from rocprof_compute_base import RocProfCompute
         from utils.utils import console_error
-    except ImportError as e2:
-        print(f"[ERROR] Failed to import required modules: {e2}")
+    except ImportError as fallback_error:
+        print(f"[ERROR] Failed to import required modules: {fallback_error}")
         print("[ERROR] Attempted paths:")
         print("  - Standard import from current location")
         print(f"  - Fallback import from {additional_path}")
         print("\nTraceback:")
-        import traceback
-
         traceback.print_exc()
         sys.exit(1)
 
