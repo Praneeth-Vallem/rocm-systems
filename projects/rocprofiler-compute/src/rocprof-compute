@@ -86,12 +86,11 @@ def verify_deps() -> None:
     dependencies (uses stdlib only)."""
 
     # Check Python version (needed for runtime validation)
-    # This function is only called in analyze mode
-    MIN_PYTHON = (3, 8)
-    if sys.version_info < MIN_PYTHON:
+    min_python = (3, 8)
+    if sys.version_info < min_python:
         print(
-            f"[ERROR] Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or higher "
-            f"is required to run rocprofiler-compute. "
+            f"[ERROR] Python {min_python[0]}.{min_python[1]} or higher "
+            f"is required for rocprofiler-compute analyze mode. "
             f"The current version is "
             f"{sys.version_info[0]}.{sys.version_info[1]}."
         )
