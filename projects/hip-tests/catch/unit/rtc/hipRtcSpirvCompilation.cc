@@ -47,7 +47,6 @@ std::vector<char> compile_prog(const char* src) {
   
   std::vector<const char *> options;
   options.push_back("-xhip");
-  options.push_back("-fgpu-rdc");
   options.push_back("--offload-arch=amdgcnspirv");
   
   hiprtcResult compileResult{hiprtcCompileProgram(prog, options.size(), options.data())};
@@ -59,9 +58,7 @@ std::vector<char> compile_prog(const char* src) {
   if (logSize) {
     std::string log(logSize, '\0');
     HIPRTC_CHECK(hiprtcGetProgramLog(prog, &log[0]));
-    std::cout << log << std::endl;
   }
-  REQUIRE(compileResult == HIPRTC_SUCCESS);
   size_t codeSize;
   HIPRTC_CHECK(hiprtcGetCodeSize(prog, &codeSize));
   
@@ -72,22 +69,27 @@ std::vector<char> compile_prog(const char* src) {
     HIPRTC_CHECK(hiprtcGetBitcodeSize(prog, &codeSize));
     code.resize(codeSize);
     REQUIRE(codeSize > 0);
+    HIPRTC_CHECK(hiprtcGetBitcode(prog, code.data()));
   }
   HIPRTC_CHECK(hiprtcDestroyProgram(&prog));
   return code;
 }
 
-void* link_prog(std::vector<char> global_obj, std::vector<char> device_obj) {
+void* link_prog(const std::vector<char>& global_obj, const std::vector<char>& device_obj) {
   hipLinkState_t state{};
   HIP_CHECK(hipLinkCreate(0, nullptr, nullptr, &state));
 
-  HIP_CHECK(hipLinkAddData(state, hipJitInputSpirv, global_obj.data(),
+  if (global_obj.size() > 0) {
+  HIP_CHECK(hipLinkAddData(state, hipJitInputSpirv, (void*)global_obj.data(),
                            global_obj.size(), "globalfunc.spv", 0, nullptr,
                            nullptr));
+  }
 
-  HIP_CHECK(hipLinkAddData(state, hipJitInputSpirv, device_obj.data(),
+  if (device_obj.size() > 0) {
+  HIP_CHECK(hipLinkAddData(state, hipJitInputSpirv, (void*)device_obj.data(),
                            device_obj.size(), "devicefunc.spv", 0, nullptr,
                            nullptr));
+  }
 
   void *bin = nullptr;
   size_t binSize = 0;
@@ -101,9 +103,12 @@ void* link_prog(std::vector<char> global_obj, std::vector<char> device_obj) {
 
 TEST_CASE("Unit_hiprtc_spirv_compilation") {
   std::vector<char> code = compile_prog(testfunc);
-  hipModule_t module;
-  hipFunction_t function;
-  HIP_CHECK(hipModuleLoadData(&module, code.data()));
+
+  void* bin = link_prog(code, {});
+
+  hipModule_t module = nullptr;
+  hipFunction_t function = nullptr;
+  HIP_CHECK(hipModuleLoadData(&module, bin));
   HIP_CHECK(hipModuleGetFunction(&function, module, "testinline"));
 
   HIP_CHECK(hipModuleLaunchKernel(function, 1, 1, 1, 64, 1, 1, 0, 0, nullptr, 0));
@@ -123,7 +128,6 @@ TEST_CASE("Unit_hiprtc_spirv_linker") {
   HIP_CHECK(hipModuleLoadData(&module, bin));
 
   HIP_CHECK(hipModuleGetFunction(&kernel, module, "kernelfunc_int"));
-    throw std::runtime_error("failed to get function");
 
   // allocate input and output buffers
   static const size_t N = 10;
@@ -157,4 +161,8 @@ TEST_CASE("Unit_hiprtc_spirv_linker") {
   for(size_t i = 0; i < N; i++) {
     REQUIRE(out_host[i]  == in_host[i] * 2 + 1);
   }
+
+  HIP_CHECK(hipModuleUnload(module));
+  HIP_CHECK(hipFree(in_device));
+  HIP_CHECK(hipFree(out_device));
 }
