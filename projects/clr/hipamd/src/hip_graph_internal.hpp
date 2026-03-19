@@ -305,8 +305,8 @@ class GraphNode : public hipGraphNodeDOTAttribute {
   const std::vector<Node>& GetDependencies() const { return dependencies_; }
   /// Update graph node dependecies
   void SetDependencies(std::vector<Node>&& dependencies) {
-    // TODO: Should the in-degree be updated here?
     dependencies_ = std::move(dependencies);
+    inDegree_ = dependencies_.size();
   }
   /// Add graph node dependency
   void AddDependency(const Node& node) {
@@ -350,8 +350,8 @@ class GraphNode : public hipGraphNodeDOTAttribute {
   const std::vector<Node>& GetEdges() const { return edges_; }
   /// Updates graph node children
   void SetEdges(std::vector<Node>&& edges) {
-    // TODO: Should the out-degree be updated here?
     edges_ = std::move(edges);
+    outDegree_ = edges_.size();
   }
   /// Get topological sort of the nodes embedded as part of the graphnode(e.g. ChildGraph)
   virtual bool TopologicalOrder(std::vector<Node>& TopoOrder) { return true; }

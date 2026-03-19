@@ -1779,10 +1779,13 @@ void GraphExec::UpdateStreams(hip::Stream* launch_stream) {
     } else if (collided_streams.size() < (streams_upper_bound - streams_.size())) {
       collided_streams.push_back(stream);
     }
-  }
 
-  // TODO: This allows the max_streams_ limit to be exceeded if there are enough unique streams. We
-  // should ideally handle this earlier, e.g. by exiting when the limit is reached inside the loop.
+    // If we've reached our stream capacity, stop assigning more streams even if there are more
+    // unique streams available, since we cannot use them.
+    if (streams_.size() >= streams_upper_bound) {
+      break;
+    }
+  }
 
   if (streams_.size() < streams_upper_bound) {
     // Assign the remaining streams for execution.
