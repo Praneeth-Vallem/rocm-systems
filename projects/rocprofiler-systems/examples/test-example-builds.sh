@@ -30,8 +30,9 @@ META_EXAMPLES=(hpc)
 build_example() {
     local dir="$1"
     local extra_args="${2:-}"
+    local build_dir="$SCRIPT_DIR/../build/examples/$dir"
     echo "=== Building $dir ==="
-    if (cd "$dir" && cmake -B build $extra_args && cmake --build build --parallel 4); then
+    if (cd "$dir" && cmake -B "$build_dir" $extra_args && cmake --build "$build_dir" --parallel 4); then
         PASSED+=("$dir")
         return 0
     else
