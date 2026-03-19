@@ -302,6 +302,111 @@ Below are some repository specific guidelines which are followed throughout the 
 Any future contributions should adhere to these guidelines:
 * Use the `pathlib` library functions instead of `os.path` for manipulating the file paths.
 
+## Profile Mode Dependency Policy
+
+### CRITICAL REQUIREMENT
+
+Profile mode code (`src/rocprof_compute_profile/`) must use ONLY Python standard library.
+
+### Why This Matters
+
+Profile mode must work in environments where `pip install` is not available:
+- HPC systems with locked-down Python environments
+- Security-sensitive systems requiring minimal attack surface
+- Any system with Python 3.8+ installed
+
+### Enforcement
+
+All profile tests are automatically protected by `ProfileModeImportGuard` in `tests/conftest.py`.
+The guard intercepts ALL imports (direct, nested, dynamic) and fails tests immediately if
+non-stdlib packages are imported.
+
+### What's Allowed
+
+✅ **Python standard library** (Python 3.8+):
+- `json`, `csv`, `sqlite3`, `subprocess`, `pathlib`, `logging`, `sys`, `os`, etc.
+- Complete list: https://docs.python.org/3.8/library/
+
+✅ **Project modules**:
+- `rocprof_compute`, `utils`, `vendored.*`, `roofline`, `config`, `argparser`
+
+✅ **ROCm system libraries** (bundled with ROCm, not pip packages):
+- `amdsmi` - AMD System Management Interface
+- `hip` - HIP runtime Python bindings
+- `rocprofv3` - ROCProfiler SDK Python bindings
+
+❌ **External packages** (forbidden in profile mode):
+- `pandas`, `yaml`, `numpy`, `plotly`, `dash`, `textual`, etc.
+- Anything from `requirements.txt`
+
+### Common Mistakes
+
+**Don't do this in profile code:**
+```python
+import pandas  # ❌ External package
+import yaml    # ❌ Use json or vendored.pyyaml instead
+import numpy   # ❌ Use stdlib math/statistics
+```
+
+**Do this instead:**
+```python
+import json              # ✅ Stdlib for config/data
+import csv               # ✅ Stdlib for CSV operations
+import sqlite3           # ✅ Stdlib for data manipulation
+from vendored.pyyaml import yaml  # ✅ Vendored package (if needed)
+```
+
+### If Your Test Fails
+
+**Error message:**
+```
+❌ PROFILE MODE DEPENDENCY VIOLATION
+Forbidden package: pandas
+```
+
+**How to fix:**
+
+1. **Move import to analyze mode**
+   - If the code is only needed for analysis, move it to `src/rocprof_compute_analyze/`
+
+2. **Use stdlib alternative**
+   - `pandas` → `csv` module + `sqlite3` for dataframes
+   - `yaml` → `json` module (or `vendored.pyyaml` if YAML required)
+   - `numpy` → `math`/`statistics` modules
+
+3. **Ask for help**
+   - If unsure about the right approach, ask the team
+
+### Testing Your Changes
+
+**Before submitting a PR that touches profile code:**
+
+```bash
+# Run profile tests (guard auto-activates)
+pytest tests/test_profile_general.py -v
+
+# If violations detected, tests FAIL with clear error message
+```
+
+**Optional: Test in clean environment:**
+```bash
+# Create fresh Python environment with no packages
+python3 -m venv /tmp/clean_env
+source /tmp/clean_env/bin/activate
+
+# Profile should work with zero pip packages
+python3 src/rocprof-compute profile --roof-only -- /bin/true
+
+# Should complete successfully ✅
+```
+
+### Analyze Mode
+
+Analyze mode CAN use external packages:
+- ✅ `pandas`, `plotly`, `dash`, `textual`, `yaml`, etc.
+- Import them at function level (lazy imports) for better error messages
+- Dependencies are verified at runtime via `verify_deps()`
+
 ### Build and test documentation changes
 
 For instructions on how to build and test documentation changes (files under docs folder), please see https://rocm.docs.amd.com/en/latest/contribute/contributing.html

@@ -50,6 +50,307 @@ except Exception:
     rocprof_compute_script_path = "rocprof-compute"
 
 
+class ProfileModeImportGuard:
+    """
+    Import guard using sys.meta_path to enforce stdlib-only imports in profile mode.
+
+    Uses PEP 302 import hooks to intercept ALL imports.
+    Fails fast on first non-stdlib import with clear error message.
+
+    Python 3.8 support: Uses hardcoded stdlib list as fallback for
+    sys.stdlib_module_names.
+    """
+
+    # Python 3.8 standard library modules (complete list)
+    # Fallback for systems without sys.stdlib_module_names (Python 3.10+)
+    STDLIB_PY38 = frozenset([
+        "__future__",
+        "__main__",
+        "_dummy_thread",
+        "_thread",
+        "abc",
+        "aifc",
+        "argparse",
+        "array",
+        "ast",
+        "asynchat",
+        "asyncio",
+        "asyncore",
+        "atexit",
+        "audioop",
+        "base64",
+        "bdb",
+        "binascii",
+        "binhex",
+        "bisect",
+        "builtins",
+        "bz2",
+        "calendar",
+        "cgi",
+        "cgitb",
+        "chunk",
+        "cmath",
+        "cmd",
+        "code",
+        "codecs",
+        "codeop",
+        "collections",
+        "colorsys",
+        "compileall",
+        "concurrent",
+        "configparser",
+        "contextlib",
+        "contextvars",
+        "copy",
+        "copyreg",
+        "cProfile",
+        "crypt",
+        "csv",
+        "ctypes",
+        "curses",
+        "dataclasses",
+        "datetime",
+        "dbm",
+        "decimal",
+        "difflib",
+        "dis",
+        "distutils",
+        "doctest",
+        "dummy_threading",
+        "email",
+        "encodings",
+        "ensurepip",
+        "enum",
+        "errno",
+        "faulthandler",
+        "fcntl",
+        "filecmp",
+        "fileinput",
+        "fnmatch",
+        "formatter",
+        "fractions",
+        "ftplib",
+        "functools",
+        "gc",
+        "getopt",
+        "getpass",
+        "gettext",
+        "glob",
+        "grp",
+        "gzip",
+        "hashlib",
+        "heapq",
+        "hmac",
+        "html",
+        "http",
+        "imaplib",
+        "imghdr",
+        "imp",
+        "importlib",
+        "inspect",
+        "io",
+        "ipaddress",
+        "itertools",
+        "json",
+        "keyword",
+        "lib2to3",
+        "linecache",
+        "locale",
+        "logging",
+        "lzma",
+        "mailbox",
+        "mailcap",
+        "marshal",
+        "math",
+        "mimetypes",
+        "mmap",
+        "modulefinder",
+        "msilib",
+        "msvcrt",
+        "multiprocessing",
+        "netrc",
+        "nis",
+        "nntplib",
+        "numbers",
+        "operator",
+        "optparse",
+        "os",
+        "ossaudiodev",
+        "parser",
+        "pathlib",
+        "pdb",
+        "pickle",
+        "pickletools",
+        "pipes",
+        "pkgutil",
+        "platform",
+        "plistlib",
+        "poplib",
+        "posix",
+        "pprint",
+        "profile",
+        "pstats",
+        "pty",
+        "pwd",
+        "py_compile",
+        "pyclbr",
+        "pydoc",
+        "queue",
+        "quopri",
+        "random",
+        "re",
+        "readline",
+        "reprlib",
+        "resource",
+        "rlcompleter",
+        "runpy",
+        "sched",
+        "secrets",
+        "select",
+        "selectors",
+        "shelve",
+        "shlex",
+        "shutil",
+        "signal",
+        "site",
+        "smtpd",
+        "smtplib",
+        "sndhdr",
+        "socket",
+        "socketserver",
+        "spwd",
+        "sqlite3",
+        "ssl",
+        "stat",
+        "statistics",
+        "string",
+        "stringprep",
+        "struct",
+        "subprocess",
+        "sunau",
+        "symbol",
+        "symtable",
+        "sys",
+        "sysconfig",
+        "syslog",
+        "tabnanny",
+        "tarfile",
+        "telnetlib",
+        "tempfile",
+        "termios",
+        "test",
+        "textwrap",
+        "threading",
+        "time",
+        "timeit",
+        "tkinter",
+        "token",
+        "tokenize",
+        "trace",
+        "traceback",
+        "tracemalloc",
+        "tty",
+        "turtle",
+        "turtledemo",
+        "types",
+        "typing",
+        "unicodedata",
+        "unittest",
+        "urllib",
+        "uu",
+        "uuid",
+        "venv",
+        "warnings",
+        "wave",
+        "weakref",
+        "webbrowser",
+        "winreg",
+        "winsound",
+        "wsgiref",
+        "xdrlib",
+        "xml",
+        "xmlrpc",
+        "zipapp",
+        "zipfile",
+        "zipimport",
+        "zlib",
+    ])
+
+    # Project modules that are allowed (non-stdlib)
+    ALLOWED_PROJECT_MODULES = frozenset([
+        "rocprof_compute",
+        "rocprof_compute_profile",
+        "rocprof_compute_analyze",
+        "rocprof_compute_soc",
+        "rocprof_compute_tui",
+        "utils",
+        "vendored",
+        "roofline",
+        "config",
+        "argparser",  # src/argparser.py, not stdlib argparse
+        "rocprof_compute_base",
+    ])
+
+    # ROCm system libraries (not pip packages)
+    ALLOWED_ROCM_MODULES = frozenset([
+        "amdsmi",  # AMD System Management Interface
+        "hip",  # HIP runtime Python bindings
+        "rocprofv3",  # ROCProfiler SDK Python bindings
+        "rocprofv3_avail_module",  # Alternative avail import
+    ])
+
+    def __init__(self):
+        # Determine stdlib module set (prefer Python 3.10+ sys.stdlib_module_names)
+        if hasattr(sys, "stdlib_module_names"):
+            self.stdlib_modules = sys.stdlib_module_names
+        else:
+            # Fallback for Python 3.8/3.9
+            self.stdlib_modules = self.STDLIB_PY38
+
+    def __enter__(self):
+        """Install import hook"""
+        sys.meta_path.insert(0, self)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Remove import hook"""
+        sys.meta_path.remove(self)
+
+    def find_module(self, fullname, path=None):
+        """
+        Import hook for Python 3.3+ compatibility.
+        Called for EVERY import - must be fast (O(1) lookups only).
+        """
+        top_level = fullname.split(".")[0]
+
+        # Check if allowed (stdlib, project module, or ROCm library)
+        if (
+            top_level in self.stdlib_modules
+            or top_level in self.ALLOWED_PROJECT_MODULES
+            or top_level in self.ALLOWED_ROCM_MODULES
+        ):
+            return None  # Allow import
+
+        # Non-stdlib, non-project module detected - fail fast!
+        raise ImportError(
+            f"\n{'=' * 70}\n"
+            "PROFILE MODE DEPENDENCY VIOLATION\n"
+            f"{'=' * 70}\n"
+            f"Forbidden package: {top_level}\n\n"
+            "Profile mode must use ONLY Python stdlib + ROCm libraries.\n"
+            "Fix: Move import to analyze mode or use stdlib alternative.\n"
+            "See CONTRIBUTING.md 'Profile Mode Dependency Policy'\n"
+            f"{'=' * 70}\n"
+        )
+
+    def find_spec(self, fullname, path, target=None):
+        """
+        Modern import hook for Python 3.4+.
+        Delegates to find_module for simplicity.
+        """
+        return self.find_module(fullname, path)
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--call-binary",
@@ -263,12 +564,20 @@ def binary_handler_profile_rocprof_compute(request):
                 return process.returncode
 
             # Default single-rank mode: patch sys.argv and call main() directly
+            # Guard imports during profile execution (test-time enforcement)
+            call_binary = request.config.getoption("--call-binary", default=False)
+
             with pytest.raises(SystemExit) as e:
                 with patch(
                     "sys.argv",
                     command_rocprof_compute,
                 ):
-                    rocprof_compute.main()
+                    # Only guard when NOT using binary mode (can't trace subprocess)
+                    if not call_binary:
+                        with ProfileModeImportGuard():
+                            rocprof_compute.main()
+                    else:
+                        rocprof_compute.main()
             # verify run status
             if check_success:
                 assert e.value.code == 0
