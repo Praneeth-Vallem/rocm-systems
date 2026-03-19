@@ -8,6 +8,7 @@
 
 #include <vector>
 #include <string>
+#include <string_view>
 
 
 #include "vdi_common.hpp"
@@ -83,8 +84,8 @@ typedef ComgrUniqueHandle<amd_comgr_data_t> ComgrDataUniqueHandle;
 }  // namespace comgr_helper
 
 namespace helpers {
-bool UnbundleBitCode(const std::vector<char>& bundled_bit_code, const std::string& isa,
-                     size_t& co_offset, size_t& co_size);
+bool UnbundleBitCode(std::string_view bundled_bit_code, const std::string& isa, size_t& co_offset,
+                     size_t& co_size);
 bool addCodeObjData(comgr_helper::ComgrDataSetUniqueHandle& input, std::string_view source,
                     const std::string& name, const amd_comgr_data_kind_t type);
 bool extractBuildLog(comgr_helper::ComgrDataSetUniqueHandle& dataSet, std::string& buildLog);
@@ -115,11 +116,11 @@ bool fillMangledNames(const std::vector<char>& executable,
                       std::map<std::string, std::string>& mangledNames, bool isBitcode);
 void GenerateUniqueFileName(std::string& name);
 
-bool CheckIfBundled(const std::vector<char>& llvm_bitcode);
+bool CheckIfBundled(std::string_view llvm_bitcode);
 
 bool UnbundleUsingComgr(std::string_view source, const std::string& isa,
                         const std::vector<std::string>& linkOptions, std::string& buildLog,
-                        std::vector<char>& unbundled_spirv_bitcode, const char* bundleEntryIDs,
+                        std::vector<char>& unbundled_spirv_bitcode, const char* bundleEntryIDs[],
                         size_t bundleEntryIDsCount);
 
 // Mapping from targets to generic targets
