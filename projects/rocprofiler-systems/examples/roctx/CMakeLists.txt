@@ -17,6 +17,7 @@ if(ROCPROFSYS_DISABLE_EXAMPLES)
 endif()
 
 find_package(hip QUIET HINTS ${ROCmVersion_DIR} PATHS ${ROCmVersion_DIR})
+find_package(Threads REQUIRED)
 
 find_program(
     HIPCC_EXECUTABLE
