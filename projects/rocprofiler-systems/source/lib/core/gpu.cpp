@@ -88,9 +88,9 @@ amdsmi_init()
     {
         // Currently, only AMDSMI_INIT_AMD_GPUS and AMDSMI_INIT_AMD_NICS are supported
         uint64_t init_flags = AMDSMI_INIT_AMD_GPUS;
-#    ifdef AINIC_SUPPORTED
+#ifdef AINIC_SUPPORTED
         init_flags |= AMDSMI_INIT_AMD_NICS;
-#    endif
+#endif
         ROCPROFSYS_AMD_SMI_CALL(::amdsmi_init(init_flags));
         get_processor_handles();
     } catch(std::exception& _e)
