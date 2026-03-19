@@ -66,8 +66,7 @@ else()
                ${PY_PACKAGE_DIR}/amdsmi_wrapper.py
         DEPENDS ${AMD_SMI} $<$<BOOL:${BUILD_PYTHON_LIB}>:${AMD_SMI}_python> python_pre_reqs generator.py ${PROJECT_SOURCE_DIR}/include/amd_smi/amdsmi.h
         COMMAND cp ${PROJECT_SOURCE_DIR}/include/amd_smi/amdsmi.h ./
-        COMMAND ${CMAKE_COMMAND} -E env AMDSMI_FIND_LIB_PATH=${CMAKE_CURRENT_BINARY_DIR}/${PY_PACKAGE_DIR}/_find_lib.py
-                ${Python3_EXECUTABLE} generator.py "$<$<BOOL:${ENABLE_ESMI_LIB}>:-e -DENABLE_ESMI_LIB>" -i amdsmi.h -l
+        COMMAND ${Python3_EXECUTABLE} generator.py "$<$<BOOL:${ENABLE_ESMI_LIB}>:-e -DENABLE_ESMI_LIB>" -i amdsmi.h -l
                 ${AMDSMI_PYTHON_LIB_PATH} -o ${CMAKE_CURRENT_SOURCE_DIR}/amdsmi_wrapper.py
         COMMAND mkdir -p ${PY_PACKAGE_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/amdsmi_wrapper.py ${PY_PACKAGE_DIR}/

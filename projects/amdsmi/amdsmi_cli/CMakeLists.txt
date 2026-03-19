@@ -5,7 +5,6 @@ message("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
 # Set CLI Build Directory
 set(PY_PACKAGE_DIR "amdsmi_cli")
 set(PY_CLI_INSTALL_DIR "${CMAKE_INSTALL_LIBEXECDIR}" CACHE STRING "CLI tool installation directory")
-set(PY_LIB_FROM_PKG "${PROJECT_BINARY_DIR}/py-interface/python_package/amdsmi/libamd_smi_python.so")
 
 # populate version string
 configure_file(_version.py.in ${PY_PACKAGE_DIR}/_version.py @ONLY)

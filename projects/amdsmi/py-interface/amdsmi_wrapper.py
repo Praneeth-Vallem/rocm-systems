@@ -191,9 +191,6 @@ from pathlib import Path
 # so every downstream ctypes binding in this wrapper works unchanged.
 # ---------------------------------------------------------------------------
 
-_libraries = {}
-
-
 def _detect_install_context():
     """Classify the current install as ``"pip"`` or ``"system"``.
 
