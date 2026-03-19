@@ -154,7 +154,6 @@ def main() -> None:
 
     # major rocprofiler-compute execution modes
     if mode == "profile":
-        # Profile mode uses only stdlib - no dependency check needed
         rocprof_compute.run_profiler()
     elif mode == "analyze":
         # Analyze mode requires external dependencies - verify them

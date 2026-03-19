@@ -236,6 +236,21 @@ option(
 )
 
 # ---------------------------
+# Profile mode import guard
+# ---------------------------
+
+# Import guard only works when calling main() directly (not in binary subprocess mode)
+if(NOT STANDALONEBINARY)
+    add_test(
+        NAME test_import_guard
+        COMMAND
+            ${PYTHON_TEST_COMMAND} -m pytest
+            --junitxml=tests/test_import_guard.xml ${COV_OPTION}
+            tests/test_import_guard.py ${WORKING_DIR_OPTION}
+    )
+endif()
+
+# ---------------------------
 # profile mode tests
 # ---------------------------
 
