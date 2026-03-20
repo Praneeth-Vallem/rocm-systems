@@ -26,12 +26,14 @@
 import csv
 import importlib.util
 import inspect
+import json
 import os
 import re
 import socket
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -3406,6 +3408,239 @@ def test_torch_trace_overhead(binary_handler_profile_rocprof_compute):
         f"longest running kernel increase too high: "
         f"{longest_running_kernel_overhead:.1f}%"
     )
+
+
+def extract_roctx_operators(workload_dir):
+    """Extract operator names and their counts from ROCTX marker_api_trace CSVs.
+
+    Returns a dict mapping operator name to its occurrence count.
+    Counts are taken from a single marker CSV (first found) to avoid
+    double-counting across multiplexing runs.
+    """
+    from collections import Counter
+
+    counts = Counter()
+    marker_files = sorted(Path(workload_dir).glob("**/*marker_api_trace.csv"))
+    if not marker_files:
+        return counts
+    with open(marker_files[0], newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            func = row.get("Function", "")
+            op_path = func.split(":#")[0] if ":#" in func else func
+            for segment in op_path.split("/"):
+                segment = segment.strip()
+                if segment:
+                    counts[segment] += 1
+    return counts
+
+
+def run_torch_profiler_on_simple_net():
+    """Run tests/simple_net.py under torch.profiler via a subprocess.
+
+    Uses ``_ExperimentalConfig(verbose=True)`` with ``with_stack=True`` and
+    ``with_modules=True`` so that every ``aten::`` event carries a Python
+    call-stack containing ``nn.Module:`` markers and source locations.
+
+    Returns a dict with three keys:
+
+    * ``"aten_ops"`` – ``{name: count}`` for every ``aten::`` operator.
+    * ``"python_ops"`` – ``set`` of Python-level operator names extracted
+      from the call-stacks (``nn.Module.*``, ``torch.nn.functional.*``,
+      ``torch.*``).  These are the names that ``inject_roctx.py`` is
+      expected to capture.
+    * ``"aten_to_python"`` – ``{aten_name: [python_op, …]}`` mapping each
+      ``aten::`` operator to the Python-level callers found in its stack.
+    """
+    torch_profiler_json = os.path.join(
+        tempfile.mkdtemp(prefix="torch_profiler_"), "operators.json"
+    )
+
+    script = f"""
+import json, re, sys, torch
+from collections import Counter, defaultdict
+from torch.profiler import ProfilerActivity, profile
+from torch._C._profiler import _ExperimentalConfig
+
+sys.path.insert(0, ".")
+from tests.simple_net import SimpleNet
+
+model = SimpleNet().cuda()
+x = torch.randn(5, 10).cuda()
+
+with profile(
+    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+    record_shapes=True,
+    with_stack=True,
+    with_modules=True,
+    experimental_config=_ExperimentalConfig(verbose=True),
+) as prof:
+    output = model(x)
+    loss = output.sum()
+    loss.backward()
+
+aten_ops = Counter()
+python_ops = set()
+aten_to_python = defaultdict(set)
+
+for evt in prof.events():
+    if not evt.name.startswith("aten::"):
+        continue
+    aten_ops[evt.name] += 1
+    if not evt.stack:
+        continue
+    for entry in evt.stack:
+        entry = entry.strip()
+        if entry.startswith("nn.Module:"):
+            # e.g. "nn.Module: Linear_0" -> "nn.Module.Linear.forward"
+            raw = entry.split(":", 1)[1].strip()
+            class_name = re.sub(r"_\\d+$", "", raw)
+            py_name = f"nn.Module.{{class_name}}.forward"
+            python_ops.add(py_name)
+            aten_to_python[evt.name].add(py_name)
+        elif "): " in entry:
+            # e.g. "torch/nn/functional.py(1710): relu"
+            path_part, func_name = entry.rsplit("): ", 1)
+            file_path = path_part.rsplit("(", 1)[0]
+            file_path = file_path.replace("/", ".")
+            if file_path.endswith(".py"):
+                file_path = file_path[:-3]
+            if file_path.startswith("torch."):
+                py_name = f"{{file_path}}.{{func_name}}"
+                python_ops.add(py_name)
+                aten_to_python[evt.name].add(py_name)
+
+result = {{
+    "aten_ops": dict(aten_ops),
+    "python_ops": sorted(python_ops),
+    "aten_to_python": {{k: sorted(v) for k, v in aten_to_python.items()}},
+}}
+with open("{torch_profiler_json}", "w") as fout:
+    json.dump(result, fout)
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"torch.profiler run failed:\nstdout: {result.stdout}\n"
+        f"stderr: {result.stderr}"
+    )
+
+    with open(torch_profiler_json) as f:
+        data = json.load(f)
+
+    os.unlink(torch_profiler_json)
+    os.rmdir(os.path.dirname(torch_profiler_json))
+    return data
+
+
+@skip_if_no_torch_gpu
+@pytest.mark.torch_trace
+def test_torch_trace_coverage(
+    binary_handler_profile_rocprof_compute,
+):
+    """Measure inject_roctx.py coverage using torch.profiler stack traces.
+
+    Runs two profiling passes on tests/simple_net.py:
+
+      1) rocprof-compute profile --experimental --torch-trace
+         → ROCTX markers (Python-level operators captured by inject_roctx.py)
+      2) torch.profiler with _ExperimentalConfig(verbose=True) + with_stack
+         → aten:: operators *with* Python call-stacks that contain the
+           nn.Module and torch.nn.functional callers.
+
+    The torch.profiler stacks act as ground truth: they tell us which
+    Python-level operations actually trigger aten:: (and therefore GPU)
+    work.  We then check that inject_roctx.py captured those same
+    Python-level operations.
+    """
+    # ------------------------------------------------------------------
+    # Run 1: rocprof-compute with --torch-trace (ROCTX injection)
+    # ------------------------------------------------------------------
+    workload_dir = test_utils.get_output_dir(param_id="torch_trace_coverage")
+
+    returncode = binary_handler_profile_rocprof_compute(
+        config,
+        workload_dir,
+        ["--experimental", "--torch-trace", "--no-roof"],
+        check_success=True,
+        app_name="torch_test_app",
+    )
+    assert returncode == 0, "rocprof-compute --torch-trace profiling failed"
+
+    roctx_ops = extract_roctx_operators(workload_dir)
+    assert len(roctx_ops) > 0, "No ROCTX operators extracted from marker CSVs"
+
+    test_utils.clean_output_dir(config["cleanup"], workload_dir)
+
+    # ------------------------------------------------------------------
+    # Run 2: torch.profiler on the same workload
+    # ------------------------------------------------------------------
+    profiler_data = run_torch_profiler_on_simple_net()
+    aten_ops = profiler_data["aten_ops"]
+    python_ops_from_stacks = set(profiler_data["python_ops"])
+    aten_to_python = profiler_data["aten_to_python"]
+
+    assert len(aten_ops) > 0, "No aten:: operators captured by torch.profiler"
+    assert len(python_ops_from_stacks) > 0, (
+        "No Python-level operators extracted from torch.profiler stacks"
+    )
+
+    # ------------------------------------------------------------------
+    # Coverage analysis
+    # ------------------------------------------------------------------
+    roctx_op_names = set(roctx_ops.keys())
+    covered = python_ops_from_stacks & roctx_op_names
+    missing = python_ops_from_stacks - roctx_op_names
+    extra = roctx_op_names - python_ops_from_stacks
+
+    coverage_pct = (
+        len(covered) / len(python_ops_from_stacks) * 100
+        if python_ops_from_stacks
+        else 0
+    )
+
+    # ------------------------------------------------------------------
+    # Report
+    # ------------------------------------------------------------------
+    print(f"\n{'=' * 70}")
+    print("  inject_roctx.py Coverage Report  (torch.profiler stack-trace method)")
+    print(f"{'=' * 70}")
+
+    print(f"\n  aten:: operators observed by torch.profiler ({len(aten_ops)}):")
+    for op in sorted(aten_ops):
+        callers = aten_to_python.get(op, [])
+        caller_str = ", ".join(callers) if callers else "(no Python caller in stack)"
+        print(f"    {op} ({aten_ops[op]})  ← {caller_str}")
+
+    print(
+        f"\n  Python-level operators from torch.profiler stacks "
+        f"({len(python_ops_from_stacks)}):"
+    )
+    for op in sorted(python_ops_from_stacks):
+        tag = "COVERED" if op in roctx_op_names else "MISSING"
+        print(f"    [{tag}] {op}")
+
+    print(f"\n  ROCTX operators from inject_roctx.py ({len(roctx_ops)}):")
+    for op in sorted(roctx_ops):
+        tag = "MATCHED" if op in python_ops_from_stacks else "extra"
+        print(f"    [{tag}] {op} ({roctx_ops[op]})")
+
+    print(f"\n  {'─' * 50}")
+    print(f"  Coverage: {len(covered)}/{len(python_ops_from_stacks)} "
+          f"Python-level operators ({coverage_pct:.0f}%)")
+    if missing:
+        print(f"  Missing from ROCTX ({len(missing)}):")
+        for op in sorted(missing):
+            print(f"    - {op}")
+    if extra:
+        print(f"  Extra in ROCTX (not in torch.profiler stacks) ({len(extra)}):")
+        for op in sorted(extra):
+            print(f"    + {op} ({roctx_ops[op]})")
+    print(f"{'=' * 70}\n")
 
 
 @pytest.mark.multi_rank
