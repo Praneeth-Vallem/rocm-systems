@@ -45,11 +45,13 @@ from utils.mi_gpu_spec import mi_gpu_specs
 from utils.parser import BUILD_IN_VARS, SUPPORTED_DENOM
 from utils.roofline_calc import validate_roofline_csv
 from utils.specs import MachineSpecs
-from utils.utils import (
-    METRIC_ID_RE,
+from utils.utils_analysis import (
+    get_panel_alias,
+)
+from utils.utils_common import METRIC_ID_RE
+from utils.utils_profile import (
     add_counter_extra_config_input_yaml,
     convert_metric_id_to_panel_info,
-    get_panel_alias,
     is_tcc_channel_counter,
     parse_sets_yaml,
     resolve_rocm_library_path,

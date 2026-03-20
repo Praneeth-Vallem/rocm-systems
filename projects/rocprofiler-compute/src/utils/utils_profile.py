@@ -51,7 +51,7 @@ from typing import Any, Optional, Union, cast
 
 import numpy as np
 import pandas as pd
-import yaml
+from vendored import yaml
 
 import config
 from utils import rocpd_data
@@ -1775,34 +1775,6 @@ def get_submodules(package_name: str) -> list[str]:
             submodules.append(pretty_name)
 
     return submodules
-
-
-def is_workload_empty(path: str) -> None:
-    """Peek workload directory to verify valid profiling output"""
-    workload_dir = Path(path)
-    pmc_perf_path = workload_dir / "pmc_perf.csv"
-
-    # Find PMC data files (merged or separate)
-    if pmc_perf_path.is_file():
-        files_to_check = [pmc_perf_path]
-    else:
-        pmc_files = list(workload_dir.glob("pmc_perf_*.csv"))
-        results_files = list(workload_dir.glob("results_*.csv"))
-        files_to_check = pmc_files if pmc_files else results_files
-
-    if not files_to_check:
-        console_error("analysis", "No profiling data found.")
-        return
-
-    # Validate files are not empty
-    for file_path in files_to_check:
-        temp_df = pd.read_csv(file_path)
-        if temp_df.dropna().empty:
-            console_error(
-                "profiling",
-                f"Found empty cells in {file_path}.\nProfiling data could be corrupt.",
-            )
-            break
 
 
 def print_status(msg: str) -> None:

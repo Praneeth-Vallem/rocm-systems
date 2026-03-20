@@ -39,15 +39,13 @@ from utils.kernel_name_shortener import (
     kernel_name_shortener,
 )
 from utils.logger import console_error, console_log, console_warning
-from utils.utils import (
-    METRIC_ID_RE,
-    NS_TO_MS,
+from utils.utils_analysis import (
     CallTreeNode,
-    convert_metric_id_to_panel_info,
     get_panel_alias,
-    get_uuid,
     simplify_kernel_name,
 )
+from utils.utils_common import METRIC_ID_RE, NS_TO_MS, get_uuid
+from utils.utils_profile import convert_metric_id_to_panel_info
 
 KERNEL_NAME_WRAP_WIDTH = 40
 

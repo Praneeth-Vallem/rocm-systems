@@ -44,7 +44,7 @@ from argparser import omniarg_parser  # noqa: E402
 from rocprof_compute_analyze.analysis_base import OmniAnalyze_Base  # noqa: E402
 from utils import file_io, parser  # noqa: E402
 from utils.mi_gpu_spec import mi_gpu_specs  # noqa: E402
-from utils.utils import merge_counters_iteration_multiplex  # noqa: E402
+from utils.utils_analysis import merge_counters_spatial_multiplex as merge_counters_iteration_multiplex  # noqa: E402
 
 
 class Colors:
