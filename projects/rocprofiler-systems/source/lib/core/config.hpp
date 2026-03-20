@@ -370,10 +370,10 @@ get_use_tmp_files();
 int
 get_kill_delay();
 
-std::string&
+std::string
 get_rank_filter_id();
 
-std::string&
+std::string
 get_rank_filter_output();
 
 std::string

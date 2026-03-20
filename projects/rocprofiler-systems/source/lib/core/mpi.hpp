@@ -32,11 +32,14 @@
 #include <timemory/environment/declaration.hpp>
 #include <timemory/utility/types.hpp>
 
+#include "config.hpp"
 #include "logger/debug.hpp"
+#include "utility.hpp"
 
 #include <cstdint>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 
 #if !defined(ROCPROFSYS_USE_MPI) && defined(ROCPROFSYS_USE_MPI_HEADERS) &&               \
     !defined(OMPI_SKIP_MPICXX)
@@ -732,6 +735,72 @@ comm_spawn_multiple(int count, char** commands, char*** argv, const int* maxproc
 }
 
 //--------------------------------------------------------------------------------------//
+
+namespace output_filtering
+{
+inline std::optional<uint64_t>
+get_rank_from_env()
+{
+#if(defined(ROCPROFSYS_USE_MPI_HEADERS) && ROCPROFSYS_USE_MPI_HEADERS > 0) ||            \
+    (defined(ROCPROFSYS_USE_MPI) && ROCPROFSYS_USE_MPI > 0)
+
+    const std::vector<std::string> rank_env_var_options = {
+        // rank env vars: user-provided then most generic to most runtime-specific
+        get_rank_filter_id(),  "MPI_RANK",
+        "MPI_LOCALRANKID",     "MPI_RANKID",
+        "MV2_COMM_WORLD_RANK", "OMPI_COMM_WORLD_RANK"
+    };
+
+    for(const auto& env_var : rank_env_var_options)
+    {
+        const std::string rank_str = get_env(env_var, std::string{}, false);
+        if(rank_str.empty()) continue;
+        try
+        {
+            const auto rank = std::stoul(rank_str);
+            LOG_DEBUG("Using MPI rank = {} from {}", rank, env_var);
+            return rank;
+        } catch(const std::exception& e)
+        {
+            LOG_WARNING("Failed to get MPI rank from {}='{}': {}", env_var, rank_str);
+        }
+    }
+#endif
+
+    return std::nullopt;
+}
+
+inline bool
+is_output_enabled_for_current_rank()
+{
+#if(defined(ROCPROFSYS_USE_MPI_HEADERS) && ROCPROFSYS_USE_MPI_HEADERS > 0) ||            \
+    (defined(ROCPROFSYS_USE_MPI) && ROCPROFSYS_USE_MPI > 0)
+
+    auto enabled_ranks_str = get_rank_filter_output();
+    for(auto& ch : enabled_ranks_str)
+        ch = std::tolower(ch);
+
+    if(enabled_ranks_str.empty() || enabled_ranks_str == "all") return true;
+    if(enabled_ranks_str == "none") return false;
+
+    const auto enabled_ranks =
+        rocprofsys::utility::parse_numeric_range<int64_t, std::unordered_set<int64_t>>(
+            enabled_ranks_str, "ranks", 1L);
+
+    const auto current_rank = get_rank_from_env();
+    if(!current_rank) return true;
+
+    if(enabled_ranks.count(current_rank.value()) == 0)
+    {
+        LOG_DEBUG("Output disabled for MPI rank {}", current_rank.value());
+        return false;
+    }
+#endif
+
+    return true;
+}
+
+}  // namespace output_filtering
 
 }  // namespace mpi
 }  // namespace rocprofsys

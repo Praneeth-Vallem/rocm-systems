@@ -881,14 +881,13 @@ configure_settings(bool _init)
 
     ROCPROFSYS_CONFIG_SETTING(std::string, "ROCPROFSYS_RANK_FILTER_ID",
                               "Name of environment variable used to represent rank",
-                              std::string{}, "data", "io");
+                              std::string{}, "data", "io", "advanced");
 
     ROCPROFSYS_CONFIG_SETTING(
         std::string, "ROCPROFSYS_RANK_FILTER_OUTPUT",
         "Ranks to inlcude in profiling. Values should be separated by commas "
-        "and can be explicit or ranges, e.g. 0,1,5-8. An empty value implies 'all' and "
-        "'none' suppresses profiling for all ranks",
-        std::string{ "all" }, "data", "io");
+        "and can be explicit or ranges, e.g. 0,1,5-8. An empty value enables output ",
+        "for all ranks", std::string{ "" }, "data", "io", "advanced");
 
     // set the defaults
     _config->get_flamegraph_output()     = false;
@@ -2576,14 +2575,14 @@ get_kill_delay()
     return static_cast<tim::tsettings<int>&>(*_v->second).get();
 }
 
-std::string&
+std::string
 get_rank_filter_id()
 {
     static auto _v = get_config()->at("ROCPROFSYS_RANK_FILTER_ID");
     return static_cast<tim::tsettings<std::string>&>(*_v).get();
 }
 
-std::string&
+std::string
 get_rank_filter_output()
 {
     static auto _v = get_config()->at("ROCPROFSYS_RANK_FILTER_OUTPUT");

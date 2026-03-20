@@ -23,6 +23,7 @@
 #include "perfetto.hpp"
 #include "config.hpp"
 #include "library/runtime.hpp"
+#include "mpi.hpp"
 #include "perfetto_fwd.hpp"
 #include "utility.hpp"
 
@@ -244,36 +245,39 @@ post_process(tim::manager* _timemory_manager, bool& _perfetto_output_error)
 
     auto _filename = config::get_perfetto_output_filename();
 
-    if(!trace_data.empty())
+    if(!mpi::output_filtering::is_output_enabled_for_current_rank())
     {
-        operation::file_output_message<tim::project::rocprofsys> _fom{};
-        // Write the trace into a file.
-        if(config::get_verbose() >= 0)
-            _fom(_filename, std::string{ "perfetto" },
-                 " (%.2f KB / %.2f MB / %.2f GB)... ",
-                 static_cast<double>(trace_data.size()) / units::KB,
-                 static_cast<double>(trace_data.size()) / units::MB,
-                 static_cast<double>(trace_data.size()) / units::GB);
-        std::ofstream ofs{};
-        if(!filepath::open(ofs, _filename, std::ios::out | std::ios::binary))
+        if(!trace_data.empty())
         {
-            _fom.append("Error opening '%s'...", _filename.c_str());
-            _perfetto_output_error = true;
-        }
-        else
-        {
+            operation::file_output_message<tim::project::rocprofsys> _fom{};
             // Write the trace into a file.
-            ofs.write(trace_data.data(), trace_data.size());
-            if(config::get_verbose() >= 0) _fom.append("%s", "Done");  // NOLINT
-            if(_timemory_manager)
-                _timemory_manager->add_file_output("protobuf", "perfetto", _filename);
+            if(config::get_verbose() >= 0)
+                _fom(_filename, std::string{ "perfetto" },
+                     " (%.2f KB / %.2f MB / %.2f GB)... ",
+                     static_cast<double>(trace_data.size()) / units::KB,
+                     static_cast<double>(trace_data.size()) / units::MB,
+                     static_cast<double>(trace_data.size()) / units::GB);
+            std::ofstream ofs{};
+            if(!filepath::open(ofs, _filename, std::ios::out | std::ios::binary))
+            {
+                _fom.append("Error opening '%s'...", _filename.c_str());
+                _perfetto_output_error = true;
+            }
+            else
+            {
+                // Write the trace into a file.
+                ofs.write(trace_data.data(), trace_data.size());
+                if(config::get_verbose() >= 0) _fom.append("%s", "Done");  // NOLINT
+                if(_timemory_manager)
+                    _timemory_manager->add_file_output("protobuf", "perfetto", _filename);
+            }
+            ofs.close();
         }
-        ofs.close();
-    }
-    else if(dmp::rank() == 0)
-    {
-        LOG_ERROR("Perfetto trace data is empty. File '{}' will not be written...",
-                  _filename);
+        else if(dmp::rank() == 0)
+        {
+            LOG_ERROR("Perfetto trace data is empty. File '{}' will not be written...",
+                      _filename);
+        }
     }
 
     // Merge the output files, if rank 0

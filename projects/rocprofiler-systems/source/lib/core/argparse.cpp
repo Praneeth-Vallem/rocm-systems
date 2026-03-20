@@ -515,6 +515,7 @@ add_core_arguments(parser_t& _parser, parser_data& _data)
                           "Sets the name of environment variable used to represent rank")
             .max_count(1)
             .dtype("string")
+            .required({ "rank-filter-output" })
             .action([&](parser_t& p) {
                 update_env(_data, "ROCPROFSYS_RANK_FILTER_ID",
                            p.get<std::string>("rank-filter-id"));
