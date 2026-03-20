@@ -753,8 +753,8 @@ hipError_t capturehipMemcpy(hipStream_t stream, void* dst, const void* src, size
     return hipErrorContextIsDestroyed;
   }
   hip::Stream* s = reinterpret_cast<hip::Stream*>(stream);
-  const std::vector<hip::GraphNode*>& pDependencies = s->GetLastCapturedNodes();
-  size_t numDependencies = pDependencies.size();
+  std::vector<hip::GraphNode*> pDependencies = s->GetLastCapturedNodes();
+  size_t numDependencies = s->GetLastCapturedNodes().size();
   hip::Graph* graph = s->GetCaptureGraph();
   hip::GraphNode* node;
   hipError_t status = ihipGraphAddMemcpyNode1D(&node, graph, pDependencies.data(), numDependencies,
