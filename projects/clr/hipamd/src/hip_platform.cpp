@@ -104,6 +104,12 @@ hipError_t ihipOccupancyMaxActiveBlocksPerMultiprocessor(
 }
 }  // namespace hip_impl
 
+// ================================================================================================
+ManagedUniqueFD::~ManagedUniqueFD() {
+  hip::PlatformState::Instance().DropUniqueFileHandle(fpath_);
+  if (!amd::Os::CloseFileHandle(fdesc_)) guarantee(false, "Cannot close the file handle");
+}
+
 namespace hip {
 constexpr unsigned __hipFatMAGIC2 = 0x48495046;  // "HIPF"
 
@@ -998,38 +1004,47 @@ void PlatformState::PopExec(ihipExec_t& exec) {
 }
 
 // ================================================================================================
-std::shared_ptr<UniqueFD> PlatformState::GetUniqueFileHandle(const std::string& file_path) {
+hipError_t PlatformState::GetManagedImage(const std::string& file_path,
+                                          std::shared_ptr<ManagedUniqueFD>& out) {
   std::scoped_lock lock(ufd_lock_);
 
+  std::shared_ptr<ManagedUniqueFD> ufd = nullptr;
   auto it = ufd_map_.find(file_path);
   if (it != ufd_map_.end()) {
-    return it->second;
+    // Try to lock the weak pointer to get a shared pointer. If it fails, it means the file was
+    // unmapped and the unique fd was destroyed and is on the way out, so we need to create a new
+    // one.
+    out = it->second.lock();
   }
 
-  // Get the file desc and file size from amd::Os API
-  amd::Os::FileDesc fdesc;
-  size_t fsize = 0;
-  if (!amd::Os::GetFileHandle(file_path.c_str(), &fdesc, &fsize)) {
-    return nullptr;
+  if (out == nullptr) {
+    // Get the file desc and file size from amd::Os API
+    amd::Os::FileDesc fdesc;
+    size_t fsize = 0;
+    if (!amd::Os::GetFileHandle(file_path.c_str(), &fdesc, &fsize)) {
+      return hipErrorFileNotFound;
+    }
+
+    out = std::make_shared<ManagedUniqueFD>(file_path, fdesc, fsize);
+    ufd_map_.emplace(file_path, out);
   }
-  
-  auto ufd = std::make_shared<UniqueFD>(file_path, fdesc, fsize);
-  ufd_map_.emplace(file_path, ufd);
-  return ufd;
+
+  if (out == nullptr) {
+    return hipErrorFileNotFound;
+  }
+
+  // If the file name exists but the file size is 0, the something wrong with the file or its path
+  if (out->fsize_ == 0) {
+    return hipErrorInvalidImage;
+  }
+
+  return hipSuccess;
 }
 
 // ================================================================================================
-bool PlatformState::CloseUniqueFileHandle(const std::shared_ptr<UniqueFD>& ufd) {
+void PlatformState::DropUniqueFileHandle(const std::string& file_path) {
   std::scoped_lock lock(ufd_lock_);
-
-  // if use_count is 2, then there is 1 entry in the map and the current entry is the last close.
-  if (ufd.use_count() == 2) {
-    ufd_map_.erase(ufd->fpath_);
-    if (!amd::Os::CloseFileHandle(ufd->fdesc_)) {
-      return false;
-    }
-  }
-  return true;
+  ufd_map_.erase(file_path);
 }
 
 // ================================================================================================
