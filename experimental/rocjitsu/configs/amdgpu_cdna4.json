@@ -1,0 +1,29 @@
+{
+  "_comment": "CDNA4 default configuration. Parameters derived from 'Introducing AMD CDNA 4 Architecture' whitepaper, AMD, 2025. https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/white-papers/amd-cdna-4-architecture-whitepaper.pdf",
+  "max_ticks": 100000,
+  "num_threads": 1,
+  "verbose": false,
+  "vm": {
+    "arch": "cdna4",
+    "gpu": {
+      "num_xcds": 8,
+      "num_iods": 2,
+      "xcd": {
+        "num_shader_engines": 4,
+        "shader_engine": {
+          "num_compute_units": 8,
+          "compute_unit": {
+            "num_wf_slots": 10,
+            "sgprs_per_wf": 104,
+            "vgprs_per_wf": 256,
+            "lds_size_kb": 160
+          }
+        }
+      },
+      "memory": {
+        "size_mb": 4096,
+        "memory_side_cache_mb": 256
+      }
+    }
+  }
+}
