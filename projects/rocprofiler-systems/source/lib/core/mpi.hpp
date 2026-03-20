@@ -738,12 +738,12 @@ comm_spawn_multiple(int count, char** commands, char*** argv, const int* maxproc
 
 namespace output_filtering
 {
+
+#if(defined(ROCPROFSYS_USE_MPI_HEADERS) && ROCPROFSYS_USE_MPI_HEADERS > 0) ||            \
+    (defined(ROCPROFSYS_USE_MPI) && ROCPROFSYS_USE_MPI > 0)
 inline std::optional<uint64_t>
 get_rank_from_env()
 {
-#if(defined(ROCPROFSYS_USE_MPI_HEADERS) && ROCPROFSYS_USE_MPI_HEADERS > 0) ||            \
-    (defined(ROCPROFSYS_USE_MPI) && ROCPROFSYS_USE_MPI > 0)
-
     const std::vector<std::string> rank_env_var_options = {
         // rank env vars: user-provided then most generic to most runtime-specific
         get_rank_filter_id(),  "MPI_RANK",
@@ -765,10 +765,12 @@ get_rank_from_env()
             LOG_WARNING("Failed to get MPI rank from {}='{}': {}", env_var, rank_str);
         }
     }
-#endif
 
     return std::nullopt;
 }
+#endif
+
+//--------------------------------------------------------------------------------------//
 
 inline bool
 is_output_enabled_for_current_rank()
@@ -799,6 +801,8 @@ is_output_enabled_for_current_rank()
 
     return true;
 }
+
+//--------------------------------------------------------------------------------------//
 
 }  // namespace output_filtering
 
