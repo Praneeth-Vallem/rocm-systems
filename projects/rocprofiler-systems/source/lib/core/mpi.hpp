@@ -758,11 +758,12 @@ get_rank_from_env()
         try
         {
             const auto rank = std::stoul(rank_str);
-            LOG_DEBUG("Using MPI rank = {} from {}", rank, env_var);
+            LOG_DEBUG("MPI output filtering: using MPI rank = {} from {}", rank, env_var);
             return rank;
         } catch(const std::exception& e)
         {
-            LOG_WARNING("Failed to get MPI rank from {}='{}': {}", env_var, rank_str);
+            LOG_WARNING("MPI output filtering: failed to get MPI rank from {}='{}': {}",
+                        env_var, rank_str);
         }
     }
 
@@ -790,7 +791,11 @@ is_output_enabled_for_current_rank()
             enabled_ranks_str, "ranks", 1L);
 
     const auto current_rank = get_rank_from_env();
-    if(!current_rank) return true;
+    if(!current_rank)
+    {
+        LOG_WARNING("MPI output filtering DISABLED: failed to get MPI rank");
+        return true;
+    }
 
     if(enabled_ranks.count(current_rank.value()) == 0)
     {
