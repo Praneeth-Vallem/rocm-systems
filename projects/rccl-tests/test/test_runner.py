@@ -30,16 +30,21 @@ def run_rccl_perf(executable_name, args, env_overrides=None, timeout=300):
     return result
 
 
-def run_rccl_mpi(executable_name, nprocs, args, hostfile=None, timeout=300):
+def run_rccl_mpi(executable_name, nprocs, args, hostfile=None,
+                 env_overrides=None, timeout=300):
     executable = os.path.join(BUILD_DIR, executable_name)
     cmd = ["mpirun", "-np", str(nprocs)]
     if hostfile:
         cmd += ["-hostfile", hostfile]
     cmd += [executable, "-p", "1"] + args
 
+    env = os.environ.copy()
+    if env_overrides:
+        env.update(env_overrides)
+
     try:
         result = subprocess.run(cmd, capture_output=True, text=True,
-                                timeout=timeout)
+                                timeout=timeout, env=env)
     except subprocess.TimeoutExpired as e:
         pytest.fail(f"MPI {executable_name} timed out after {timeout}s\n"
                     f"stdout: {e.stdout}\nstderr: {e.stderr}")

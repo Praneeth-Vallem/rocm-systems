@@ -8,14 +8,25 @@ import subprocess
 import warnings
 import pytest
 
-BUILD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build")
+from test_runner import BUILD_DIR
+
+
+def _visible_device_count(var_name):
+    """Parse a comma-separated device list, returning None if unset/empty."""
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    return len([x for x in raw.split(",") if x.strip()])
 
 
 def detect_gpu_count():
-    if os.environ.get('ROCR_VISIBLE_DEVICES'):
-        return len(os.environ['ROCR_VISIBLE_DEVICES'].split(","))
-    if os.environ.get('HIP_VISIBLE_DEVICES'):
-        return len(os.environ['HIP_VISIBLE_DEVICES'].split(","))
+    for var in ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"):
+        n = _visible_device_count(var)
+        if n is not None:
+            return n
     try:
         out = subprocess.check_output(
             ["rocminfo"],

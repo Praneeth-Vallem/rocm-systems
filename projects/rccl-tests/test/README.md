@@ -8,6 +8,8 @@
 - [Test Markers](#test-markers)
 - [Filtering Tests](#filtering-tests)
 - [Collectives Covered](#collectives-covered)
+- [CI Integration](#ci-integration)
+- [Notes](#notes)
 - [Additional Options](#additional-options)
 
 ## Prerequisites
@@ -75,7 +77,7 @@ python3 -m pytest --msg-profile=smoke
 - **GPU sweep**: all counts from 1 to available GPUs
 - **Step factor**: 2
 
-Intended for nightly CI -- full coverage of all parameter combinations and large message sizes.
+Intended for nightly CI -- full coverage of all parameter combinations and large message sizes. The combinatorial explosion is significant: `(byte_ranges x ops x datatypes x memory_types x gpu_counts x collectives)`
 
 ```shell
 python3 -m pytest --msg-profile=stress
@@ -142,6 +144,30 @@ python3 -m pytest --ignore=test_allreduce_bias.py
 | test_scatter.py | scatter_perf |
 | test_sendrecv.py | sendrecv_perf |
 
+## CI Integration
+
+RCCL-Tests CI **precheckin** invocation (smoke profile, retry flaky tests, JUnit output):
+```shell
+PYTEST_ADDOPTS="--reruns=1 --reruns-delay=0.25" \
+  python3 -m pytest --msg-profile=smoke --junitxml=testreport.xml
+```
+
+RCCL-Tests CI **nightly** invocation (stress profile, no retries):
+```shell
+python3 -m pytest --msg-profile=stress --junitxml=testreport.xml --test-timeout=600
+```
+
+MPI tests require `mpirun` to be on `PATH`. If MPI is not installed, exclude MPI tests:
+```shell
+python3 -m pytest -m "not mpi"
+```
+
+## Notes
+
+- **Ops sweep**: Only collectives that accept a reduction operation (allreduce, allreduce_bias, reduce, reducescatter) parametrize over `ops`. Other collectives (allgather, alltoall, broadcast, etc.) ignore the ops list in the profile.
+- **MPI + memory types**: MPI tests currently do not sweep `memory_types`. All MPI subtests use the default memory type. This may be extended in a future update.
+- **Test retries**: `pytest-rerunfailures` is available but not enabled by default. Use `PYTEST_ADDOPTS="--reruns=1"` in CI environments to retry flaky tests.
+
 ## Additional Options
 
 | Option | Description |
@@ -151,4 +177,5 @@ python3 -m pytest --ignore=test_allreduce_bias.py
 | `--junitxml=testreport.xml` | JUnit XML report for CI |
 | `--html=report.html --self-contained-html` | HTML report with embedded stdout/stderr |
 | `--json-report --json-report-file=report.json` | Machine-readable JSON report |
+| `--reruns=N` | Retry failed tests N times (via `PYTEST_ADDOPTS`, not enabled by default) |
 | `-v --tb=short` | Verbose output with short tracebacks (enabled by default in pytest.ini) |

@@ -1,6 +1,5 @@
 pytest
 pytest-rerunfailures
 pytest-subtests
-pytest-timeout
 pytest-html
 pytest-json-report
