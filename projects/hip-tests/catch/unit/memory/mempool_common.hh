@@ -11,7 +11,14 @@
 #include <resource_guards.hh>
 #include <utils.hh>
 
-#ifdef __linux__
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <tchar.h>
+#include <tlhelp32.h>
+#else
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -22,6 +29,11 @@
 #include <memory.h>
 #include <sys/un.h>
 #endif
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
 
 namespace {
 constexpr auto wait_ms = 500;
@@ -429,38 +441,210 @@ class streamMemAllocTest {
   }
 };
 
-#ifdef __linux__
-
 #define checkSysCallErrors(result)                                                                 \
   if (result == -1) {                                                                              \
     fprintf(stderr, "Failure at %u %s\n", __LINE__, __FILE__); exit(EXIT_FAILURE);                 \
   }
 
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+typedef PROCESS_INFORMATION Process;
+typedef HANDLE hipShareableHdl;
+#else
+typedef pid_t Process;
 #ifdef HT_AMD
 typedef int64_t hipShareableHdl;
 #else
 typedef int hipShareableHdl;
 #endif
+#endif
 
-typedef pid_t Process;
+struct sharedMemoryInfo {
+  void *addr;
+  size_t size;
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+  HANDLE shmHandle;
+#else
+  int shmFd;
+#endif
+};
+
+inline int sharedMemoryCreate(const char *name, size_t sz, sharedMemoryInfo *info) {
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+  info->size = sz;
+  info->shmHandle = CreateFileMapping(INVALID_HANDLE_VALUE, NULL,
+                                      PAGE_READWRITE, 0, (DWORD)sz, name);
+  if (info->shmHandle == 0) return GetLastError();
+  info->addr = MapViewOfFile(info->shmHandle, FILE_MAP_ALL_ACCESS, 0, 0, sz);
+  if (info->addr == NULL) return GetLastError();
+  return 0;
+#else
+  info->size = sz;
+  info->shmFd = shm_open(name, O_RDWR | O_CREAT, 0777);
+  if (info->shmFd < 0) return errno;
+  if (ftruncate(info->shmFd, sz) != 0) return errno;
+  info->addr = mmap(0, sz, PROT_READ | PROT_WRITE, MAP_SHARED, info->shmFd, 0);
+  if (info->addr == MAP_FAILED) return errno;
+  return 0;
+#endif
+}
+
+inline int sharedMemoryOpen(const char *name, size_t sz, sharedMemoryInfo *info) {
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+  info->size = sz;
+  info->shmHandle = OpenFileMapping(FILE_MAP_ALL_ACCESS, FALSE, name);
+  if (info->shmHandle == 0) return GetLastError();
+  info->addr = MapViewOfFile(info->shmHandle, FILE_MAP_ALL_ACCESS, 0, 0, sz);
+  if (info->addr == NULL) return GetLastError();
+  return 0;
+#else
+  info->size = sz;
+  info->shmFd = shm_open(name, O_RDWR, 0777);
+  if (info->shmFd < 0) return errno;
+  info->addr = mmap(0, sz, PROT_READ | PROT_WRITE, MAP_SHARED, info->shmFd, 0);
+  if (info->addr == MAP_FAILED) return errno;
+  return 0;
+#endif
+}
+
+inline void sharedMemoryClose(sharedMemoryInfo *info) {
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+  if (info->addr) UnmapViewOfFile(info->addr);
+  if (info->shmHandle) CloseHandle(info->shmHandle);
+#else
+  if (info->addr) munmap(info->addr, info->size);
+  if (info->shmFd) close(info->shmFd);
+#endif
+}
+
+inline int spawnProcess(Process *process, const char *app, char *const *args) {
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+  STARTUPINFO si = {};
+  std::string arg_string;
+  memset(process, 0, sizeof(*process));
+  while (*args) {
+    arg_string.append(*args).append(1, ' ');
+    args++;
+  }
+  BOOL status = CreateProcess(app, LPSTR(arg_string.c_str()), NULL, NULL, FALSE,
+                              0, NULL, NULL, &si, process);
+  return status ? 0 : GetLastError();
+#else
+  *process = fork();
+  if (*process == 0) {
+    if (0 > execvp(app, args)) return errno;
+  } else if (*process < 0) {
+    return errno;
+  }
+  return 0;
+#endif
+}
+
+inline int waitProcess(Process *process) {
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+  DWORD exitCode;
+  WaitForSingleObject(process->hProcess, INFINITE);
+  GetExitCodeProcess(process->hProcess, &exitCode);
+  CloseHandle(process->hProcess);
+  CloseHandle(process->hThread);
+  return (int)exitCode;
+#else
+  int status = 0;
+  do {
+    if (0 > waitpid(*process, &status, 0)) return errno;
+  } while (!WIFEXITED(status));
+  return WEXITSTATUS(status);
+#endif
+}
+
+inline void barrierWait(volatile int *barrier, volatile int *sense, unsigned int n) {
+  int count;
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+  count = InterlockedIncrement((volatile LONG *)barrier);
+#else
+  count = __sync_add_and_fetch((int *)barrier, 1);
+#endif
+  if ((unsigned int)count == n) {
+    *barrier = 0;
+    *sense = 1 - *sense;
+  } else {
+    int old_sense = *sense;
+    while (*sense == old_sense) { }
+  }
+}
+
+inline std::string getSelfExePath() {
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+  char path[MAX_PATH];
+  DWORD len = GetModuleFileName(NULL, path, MAX_PATH);
+  return std::string(path, len);
+#else
+  char path[4096];
+  ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
+  if (len < 0) return "";
+  path[len] = '\0';
+  return std::string(path);
+#endif
+}
+
+inline unsigned long getParentProcessId() {
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+  DWORD pid = GetCurrentProcessId();
+  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot == INVALID_HANDLE_VALUE) return 0;
+  PROCESSENTRY32 pe = {};
+  pe.dwSize = sizeof(pe);
+  if (Process32First(snapshot, &pe)) {
+    do {
+      if (pe.th32ProcessID == pid) {
+        CloseHandle(snapshot);
+        return pe.th32ParentProcessID;
+      }
+    } while (Process32Next(snapshot, &pe));
+  }
+  CloseHandle(snapshot);
+  return 0;
+#else
+  return static_cast<unsigned long>(getppid());
+#endif
+}
+
+struct mempoolIpcShmStruct {
+  hipMemPoolPtrExportData ptrExportData;
+  hipMemAllocationHandleType handleType;
+  int device;
+  int barrier;
+  int sense;
+};
 
 struct ipcHdl {
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+    HANDLE mailslot;
+#else
     int socket;
+#endif
     char *name;
 };
 
 class ipcSocketCom {
   ipcHdl *handle;
-  // method to create socket from server
+
   int createSocket() {
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+    handle = new ipcHdl;
+    if (nullptr == handle) {
+      perror("Socket failure: Handle memory allocation failed");
+      return -1;
+    }
+    handle->mailslot = INVALID_HANDLE_VALUE;
+    handle->name = NULL;
+    return 0;
+#else
     int server_fd;
     struct sockaddr_un servaddr;
 
     char name[16];
-    // Create a unique socket name based on current pid
     sprintf(name, "%u", getpid());
 
-    // Create the socket handle
     handle = new ipcHdl;
     if (nullptr == handle) {
       perror("Socket failure: Handle memory allocation failed");
@@ -471,7 +655,6 @@ class ipcSocketCom {
     handle->socket = -1;
     handle->name = NULL;
 
-    // Creating socket
     if ((server_fd = socket(AF_UNIX, SOCK_DGRAM, 0)) == 0) {
       perror("Socket failure: Socket creation failed");
       return -1;
@@ -498,9 +681,28 @@ class ipcSocketCom {
     strcpy(handle->name, name);
     handle->socket = server_fd;
     return 0;
+#endif
   }
-  // method to create socket from client
+
   int openSocket() {
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+    handle = new ipcHdl;
+    if (nullptr == handle) {
+      perror("Socket failure: Handle memory allocation failed");
+      return -1;
+    }
+    char name[128];
+    sprintf(name, "\\\\.\\mailslot\\hipMemPoolIPC_%lu",
+            (unsigned long)GetCurrentProcessId());
+    handle->mailslot = CreateMailslot(name, 0, MAILSLOT_WAIT_FOREVER, NULL);
+    if (handle->mailslot == INVALID_HANDLE_VALUE) {
+      fprintf(stderr, "CreateMailslot failed (%lu)\n", GetLastError());
+      return -1;
+    }
+    handle->name = new char[strlen(name) + 1];
+    strcpy(handle->name, name);
+    return 0;
+#else
     int sock = 0;
     struct sockaddr_un cliaddr;
 
@@ -520,7 +722,6 @@ class ipcSocketCom {
     cliaddr.sun_family = AF_UNIX;
     char name[16];
 
-    // Create a unique socket name based on current process id.
     sprintf(name, "%u", getpid());
 
     strcpy(cliaddr.sun_path, name);
@@ -534,9 +735,19 @@ class ipcSocketCom {
     strcpy(handle->name, name);
 
     return 0;
+#endif
   }
-  // method to close socket
+
   int closeSocket() {
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+    if (!handle) return -1;
+    if (handle->mailslot != INVALID_HANDLE_VALUE) {
+      CloseHandle(handle->mailslot);
+    }
+    if (handle->name) delete[] handle->name;
+    delete handle;
+    return 0;
+#else
     if (!handle) {
       return -1;
     }
@@ -548,7 +759,9 @@ class ipcSocketCom {
     close(handle->socket);
     delete handle;
     return 0;
+#endif
   }
+
 public:
   ipcSocketCom() = default;
   ipcSocketCom(bool isServer) {
@@ -563,12 +776,19 @@ public:
   int closeThisSock() {
     return closeSocket();
   }
-  // method to receive shareable handle via socket
+
   int recvShareableHdl(hipShareableHdl *shHandle) {
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+    DWORD cbRead = 0;
+    if (!ReadFile(handle->mailslot, shHandle, sizeof(*shHandle), &cbRead, NULL)) {
+      fprintf(stderr, "ReadFile failed (%lu)\n", GetLastError());
+      return -1;
+    }
+    return 0;
+#else
     struct msghdr msg = {};
     struct iovec iov[1];
 
-    // Union to guarantee alignment requirements for control array
     union {
       struct cmsghdr cm;
       char control[CMSG_SPACE(sizeof(int))];
@@ -606,9 +826,43 @@ public:
     }
 
     return 0;
+#endif
   }
-  // method to send shareable handle via sockets
+
   int sendShareableHdl(hipShareableHdl shareableHdl, Process process) {
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+    HANDLE hProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, process.dwProcessId);
+    if (hProcess == NULL) {
+      fprintf(stderr, "OpenProcess failed (%lu)\n", GetLastError());
+      return -1;
+    }
+    HANDLE hDup = INVALID_HANDLE_VALUE;
+    if (!DuplicateHandle(GetCurrentProcess(), shareableHdl, hProcess,
+                         &hDup, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+      CloseHandle(hProcess);
+      fprintf(stderr, "DuplicateHandle failed (%lu)\n", GetLastError());
+      return -1;
+    }
+    CloseHandle(hProcess);
+
+    char slotName[128];
+    sprintf(slotName, "\\\\.\\mailslot\\hipMemPoolIPC_%lu",
+            (unsigned long)process.dwProcessId);
+    HANDLE hFile = CreateFile(slotName, GENERIC_WRITE, FILE_SHARE_READ,
+                              NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+      fprintf(stderr, "CreateFile for mailslot failed (%lu)\n", GetLastError());
+      return -1;
+    }
+    DWORD cbWritten;
+    if (!WriteFile(hFile, &hDup, sizeof(hDup), &cbWritten, NULL)) {
+      CloseHandle(hFile);
+      fprintf(stderr, "WriteFile failed (%lu)\n", GetLastError());
+      return -1;
+    }
+    CloseHandle(hFile);
+    return 0;
+#else
     struct msghdr msg = {};
     struct iovec iov[1];
     int dummy_data = 0;
@@ -621,12 +875,10 @@ public:
     struct cmsghdr *cmptr;
     struct sockaddr_un cliaddr;
 
-    // Construct client address to send this SHareable handle to
     bzero(&cliaddr, sizeof(cliaddr));
     cliaddr.sun_family = AF_UNIX;
     strcpy(cliaddr.sun_path, std::to_string(process).c_str());
 
-    // Send corresponding shareable handle to the client
     int sendfd = (int)shareableHdl;
 
     msg.msg_control = control_un.control;
@@ -652,6 +904,6 @@ public:
       return -1;
     }
     return 0;
+#endif
   }
 };
-#endif
