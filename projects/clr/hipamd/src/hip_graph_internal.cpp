@@ -1768,10 +1768,11 @@ void GraphExec::UpdateStreams(hip::Stream* launch_stream) {
   // capacity.
   std::vector<hip::Stream*> collided_streams;
 
-  // Assign streams that are unique in parallel_streams and doesnt collide with launch stream.
+  // Assign streams that are unique in parallel_streams and dont collide with the launch stream.
   // To reduce the amount of reallocations in collided_streams, we stop adding new streams once we
-  // have enough to fill the remaining capacity after unique streams are added. We cannot stop
-  // iterating through parallel_streams, since we need to check all streams for uniqueness.
+  // have enough to fill the remaining capacity after unique streams are added. We also stop
+  // iterating through parallel_streams once we reach streams_upper_bound, since additional streams
+  // (even if unique) cannot be used beyond the configured capacity.
   for (hip::Stream* stream : parallel_streams) {
     bool has_unseen_queue = unique_stream_ids.insert(stream->getQueueID()).second;
     if (has_unseen_queue) {

@@ -13,7 +13,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <numeric>
 
 #include "hip/hip_runtime.h"
 #include "hip_internal.hpp"
