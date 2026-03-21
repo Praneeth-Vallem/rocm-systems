@@ -222,3 +222,54 @@ def gpu_counts(gpu_info, profile):
         )
 
     return [str(x) for x in counts]
+
+
+# ---------------------------------------------------------------------------
+# Failed-subtest summary: surface the exact configs that failed at the end
+# ---------------------------------------------------------------------------
+
+_FAILED_SUBTEST_REPORTS = {}
+_SUBTEST_FAILED_ONCE = set()
+_SUBTEST_FLAKY_PASSED = set()
+
+
+def pytest_runtest_logreport(report):
+    """Track failed subtests and keep only final outcomes."""
+    if report.when != "call":
+        return
+    if not hasattr(report, "context"):
+        return
+    if getattr(report, "outcome", None) == "rerun":
+        return
+    nodeid = report.nodeid
+    if report.passed:
+        if nodeid in _SUBTEST_FAILED_ONCE:
+            _SUBTEST_FLAKY_PASSED.add(nodeid)
+        _FAILED_SUBTEST_REPORTS.pop(nodeid, None)
+    elif report.failed:
+        _SUBTEST_FAILED_ONCE.add(nodeid)
+        _SUBTEST_FLAKY_PASSED.discard(nodeid)
+        _FAILED_SUBTEST_REPORTS[nodeid] = report
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    final_flaky = sorted(
+        nodeid for nodeid in _SUBTEST_FLAKY_PASSED
+        if nodeid not in _FAILED_SUBTEST_REPORTS
+    )
+
+    if _FAILED_SUBTEST_REPORTS:
+        terminalreporter.section("Failed subtest configurations")
+        for nodeid in sorted(_FAILED_SUBTEST_REPORTS):
+            report = _FAILED_SUBTEST_REPORTS[nodeid]
+            terminalreporter.line(f"[FAILED] {nodeid}")
+            if report.longreprtext:
+                for line in report.longreprtext.strip().splitlines():
+                    if line.startswith("E "):
+                        terminalreporter.line(f"  {line}")
+                        break
+
+    if final_flaky:
+        terminalreporter.section("Flaky subtests (failed then passed on rerun) configurations")
+        for nodeid in final_flaky:
+            terminalreporter.line(f"[FLAKY] {nodeid}")
